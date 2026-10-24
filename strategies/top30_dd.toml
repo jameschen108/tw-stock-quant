@@ -1,0 +1,16 @@
+name = "前 30＋小額不調＋回落控制 15%"
+description = "同 top30_mt；資產從高點回落 15% 就隔天全部賣出，到下次換股才恢復"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[position]
+min_trade = 5000
+
+[risk]
+dd_limit = 0.15
+dd_exposure = 0.0

@@ -1,0 +1,19 @@
+name = "前 30＋小額不調＋每日大盤濾網"
+description = "同 top30_mt；全市場等權指數收盤跌破 200 日均線就隔天全部賣出，站回均線隔天買回這期名單"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[position]
+min_trade = 5000
+
+[risk]
+regime = "ma"
+regime_index = "ew"
+regime_ma = 200
+regime_off = 0.0
+regime_freq = "daily"

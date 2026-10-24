@@ -1,0 +1,3 @@
+# 模擬持股要同時追蹤的策略（strategies/ 底下的設定檔），一行一個；# 之後是註解
+strategies/top30_mt.toml            # 綜合分數前 30＋小額不調
+strategies/top30_regime_daily.toml  # 同上＋每日大盤濾網

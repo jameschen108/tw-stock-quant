@@ -1,0 +1,15 @@
+name = "綜合分數前 30＋目標波動 18%＋小額不調"
+description = "同 top30；依目標持股過去 60 日的組合波動調整曝險，讓預估年化波動不超過 18%；續抱股票調整金額小於 5,000 元就不調"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[position]
+min_trade = 5000
+
+[risk]
+target_vol = 0.18

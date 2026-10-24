@@ -1,0 +1,15 @@
+name = "綜合分數前 30＋大盤濾網"
+description = "同 top30；換股日全市場等權指數在 200 日均線下就全部轉現金"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[risk]
+regime = "ma"
+regime_index = "ew"
+regime_ma = 200
+regime_off = 0.0

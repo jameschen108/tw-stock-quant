@@ -1,0 +1,15 @@
+name = "中期看漲＋避開長期看跌（波動倒數）"
+description = "outlook 中期看漲、長期不是看跌，依中期百分位取 10 檔；波動倒數加權，單檔 ≤ 20%、單一產業 ≤ 30%"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+filters = ["mid_label == '看漲'", "long_label != '看跌'"]
+sort = "mid_pct"
+n = 10
+
+[position]
+weighting = "inv_vol"
+max_weight = 0.2
+max_industry = 0.3

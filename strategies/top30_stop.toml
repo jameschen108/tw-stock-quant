@@ -1,0 +1,16 @@
+name = "前 30＋小額不調＋移動停損 20%"
+description = "同 top30_mt；個股從進場後高點跌 20% 就隔天賣出，這期不再買回"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[position]
+min_trade = 5000
+
+[risk]
+stop_loss = 0.20
+stop_type = "trailing"

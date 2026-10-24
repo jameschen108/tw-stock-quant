@@ -1,0 +1,9 @@
+name = "綜合分數前 10"
+description = "10 萬元只買 10 檔：每檔約 1 萬元，手續費最低 20 元的影響比 30 檔小"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 10

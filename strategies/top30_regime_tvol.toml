@@ -1,0 +1,16 @@
+name = "綜合分數前 30＋大盤濾網＋目標波動"
+description = "大盤濾網（全市場等權 200 日均線）和目標波動 18% 同時用，曝險 = 兩者相乘"
+
+[universe]
+filters = ["avg_value >= 2e7"]
+
+[select]
+sort = "comp_equal"
+n = 30
+
+[risk]
+regime = "ma"
+regime_index = "ew"
+regime_ma = 200
+regime_off = 0.0
+target_vol = 0.18

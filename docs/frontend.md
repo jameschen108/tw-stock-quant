@@ -2,6 +2,14 @@
 
 本機用的介面，把現在分散在 `reports/*.html` 和各腳本的東西集中到一個入口。現有的靜態報告保留，`update.py` 照舊產生。
 
+## 啟動
+
+在專案根目錄執行（設定檔 `.streamlit/config.toml` 綁定 `127.0.0.1`；含 TEJ 數字，不要用公開網址打開）：
+
+```
+uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.py --server.address 127.0.0.1
+```
+
 ## 限制
 
 - **只在本機跑**：TEJ 資料授權不能再散布，所以不能部署到公開網址，也不能把含 TEJ 數字的頁面分享出去。綁定 `localhost` 就好。

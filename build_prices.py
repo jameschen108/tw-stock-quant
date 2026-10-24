@@ -7,7 +7,7 @@
 用法: uv run build_prices.py
 
 輸入:
-  111/data/prices/{twse,tpex}/YYYYMMDD.json   每日收盤行情（111 的 fetch_prices.py 抓的）
+  data/prices/{twse,tpex}/YYYYMMDD.json   每日收盤行情（fetch_prices.py 抓的）
   data/raw/events/*/*.json   除權息、減資、變更面額、ETF 分割 / 反分割（fetch_events.py）
 
 輸出 (data/):
@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).parent
-DAILY = Path("/Users/jameschen/Project/111/data/prices")
+DAILY = ROOT / "data" / "prices"
 EVENTS = ROOT / "data" / "raw" / "events"
 OUT = ROOT / "data"
 

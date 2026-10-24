@@ -9,7 +9,7 @@
   uv run update.py --skip-fetch    # 只重建 + 檢查
 
 步驟:
-  1. 日行情    111 的 fetch_prices.py（上市、上櫃平行），從最新資料日往前 5 天抓到今天
+  1. 日行情    fetch_prices.py（上市、上櫃平行），從最新資料日往前 5 天抓到今天
                （17:30 前只抓到昨天；最近 7 天被記成空資料的平日會刪掉紀錄重抓，CLOSED 列的臨時休市日除外）
   2. 除權息    fetch_events.py（只重抓涵蓋今天的那一段）
   3. 營收財報  fetch_public.py（OpenAPI 快照）；fetch_cashflow.py（新季度的營業現金流，每次最多 200 家）；重大訊息 fetch_mops.py（近 14 天沒抓過的日子 + 最近 3 天）
@@ -33,7 +33,6 @@ import pandas as pd
 ROOT = Path(__file__).parent
 DATA = ROOT / "data"
 LOGS = ROOT / "logs"
-P111 = Path("/Users/jameschen/Project/111")
 STATUS = DATA / "update_status.json"
 PUBLISH_HOUR = (17, 30)   # 證交所、櫃買每日行情大約 14:00–16:00 公布，留點餘裕
 
@@ -83,10 +82,12 @@ CLOSED = {"2026-10-23": "颱風休市"}
 
 
 def retry_recent_empty(days: int = 7):
-    """111 的 manifest 把當天還沒公布的平日記成 empty 後就不會再抓：最近幾天的 empty 紀錄刪掉重試。"""
+    """行情的 manifest 把當天還沒公布的平日記成 empty 後就不會再抓：最近幾天的 empty 紀錄刪掉重試。"""
     cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
     for m in ("twse", "tpex"):
-        f = P111 / "data" / "prices" / m / "manifest.jsonl"
+        f = DATA / "prices" / m / "manifest.jsonl"
+        if not f.exists():
+            continue
         lines = f.read_text().splitlines()
         keep = [l for l in lines if not (l.strip() and json.loads(l)["status"] == "empty"
                                           and json.loads(l)["date"] >= cutoff
@@ -188,9 +189,8 @@ def main():
         retry_recent_empty()
         start = (last_price_date() - timedelta(days=5)).date().isoformat()
         end = fetch_end()
-        py111 = str(P111 / ".venv" / "bin" / "python")
-        ok &= run_parallel({f"行情 {m}": [py111, "scripts/fetch_prices.py", "--market", m, "--start", start, "--end", end]
-                            for m in ("twse", "tpex")}, cwd=P111)
+        ok &= run_parallel({f"行情 {m}": ["uv", "run", "-q", "fetch_prices.py", "--market", m, "--start", start, "--end", end]
+                            for m in ("twse", "tpex")}, cwd=ROOT)
         for src in ("twse", "tpex"):
             ok &= run(["uv", "run", "-q", "fetch_events.py", "--source", src], f"除權息 {src}")
         ok &= run(["uv", "run", "-q", "fetch_public.py"], "營收 / 財報 OpenAPI")

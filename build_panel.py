@@ -19,8 +19,8 @@ from pathlib import Path
 
 import pandas as pd
 
-RAW = Path("/Users/jameschen/Project/data")
 OUT = Path(__file__).parent / "data"
+RAW = OUT / "tej"   # TEJ 匯出的兩個 CSV 放這裡
 
 REV_CSV = RAW / "20261022103241.csv"
 FIN_CSV = RAW / "20261022104526.csv"

@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).parent
-RAW = Path("/Users/jameschen/Project/data")
+FINMIND = ROOT / "data" / "finmind" / "price"   # 選用：FinMind 原始收盤價，沒有就跳過第 1 項
 
 px = pd.read_parquet(ROOT / "data" / "prices_daily.parquet")
 ev = pd.read_parquet(ROOT / "data" / "price_events.parquet")
@@ -21,17 +21,20 @@ print(f"rows {len(px):,}  codes {px.code.nunique()}  {px.date.min().date()} ~ {p
 print("trading days per year:", px.groupby(px.date.dt.year).date.nunique().to_dict())
 
 # 1. 原始收盤對 FinMind（未還原）
-fm = []
-for p in sorted((RAW / "raw/finmind/price").glob("*.json")):
-    d = json.loads(p.read_text())
-    d = d.get("data", d) if isinstance(d, dict) else d
-    if d:
-        fm.append(pd.DataFrame(d)[["date", "stock_id", "close"]])
-fm = pd.concat(fm).rename(columns={"stock_id": "code", "close": "fm_close"})
-fm["date"] = pd.to_datetime(fm["date"])
-m = fm[fm.fm_close > 0].merge(px[["date", "code", "close"]], on=["date", "code"], how="left")
-print(f"\n[1] vs FinMind: {len(m):,} rows, missing in ours {m.close.isna().mean():.3%}, "
-      f"close mismatch {(m.close.notna() & (m.close - m.fm_close).abs().gt(1e-6)).mean():.3%}")
+if FINMIND.exists():
+    fm = []
+    for p in sorted(FINMIND.glob("*.json")):
+        d = json.loads(p.read_text())
+        d = d.get("data", d) if isinstance(d, dict) else d
+        if d:
+            fm.append(pd.DataFrame(d)[["date", "stock_id", "close"]])
+    fm = pd.concat(fm).rename(columns={"stock_id": "code", "close": "fm_close"})
+    fm["date"] = pd.to_datetime(fm["date"])
+    m = fm[fm.fm_close > 0].merge(px[["date", "code", "close"]], on=["date", "code"], how="left")
+    print(f"\n[1] vs FinMind: {len(m):,} rows, missing in ours {m.close.isna().mean():.3%}, "
+          f"close mismatch {(m.close.notna() & (m.close - m.fm_close).abs().gt(1e-6)).mean():.3%}")
+else:
+    print("\n[1] 沒有 data/finmind/price，略過")
 
 # 2. 事件覆蓋：證交所「X 不比價」日 / 櫃買「次日參考價 != 收盤」
 evk = set(zip(ev.code, ev.date))

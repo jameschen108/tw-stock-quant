@@ -42,7 +42,9 @@
   - 基準：同池等權（每期買進持有、不扣成本）、0050
 
 每次回測（設定內容不同才算一次）都記到 data/strategy/trials.jsonl。成績單附 Deflated Sharpe：
-把「總共試過 N 個設定」的運氣成分扣掉後，月 Sharpe 仍大於 0 的機率（Bailey & López de Prado 2014）。
+把「總共試過 N 個設定」的運氣成分扣掉後，月 Sharpe 仍大於 0 的機率（Bailey & López de Prado 2014）；
+另附檢定「月超額報酬（策略 − 0050）的 Sharpe 大於 0」的版本（dsr_excess）。
+每日報酬與成績單另存 data/strategy/results/<id>.parquet / .json，給前端讀（不用重跑）。
 """
 import argparse
 import hashlib
@@ -63,6 +65,7 @@ from report import CSS, svg_lines
 ROOT = Path(__file__).parent
 LATE = {"position": {"min_trade"}, "risk": {"stop_loss", "stop_type", "regime_freq", "dd_limit", "dd_exposure"}}
 TRIALS = OUT / "strategy" / "trials.jsonl"
+RESULTS = OUT / "strategy" / "results"
 REPORTS = ROOT / "reports"
 ETF = "0050"
 PERIODS = {"全期": ("2000-01-01", "2100-01-01"), "樣本內 2011–2018": ("2011-01-01", "2018-12-31"),
@@ -430,9 +433,16 @@ def perf(r: pd.Series) -> dict:
             "sharpe_m": m.mean() / m.std() if m.std() > 0 else np.nan, "months": len(m)}
 
 
-def deflated_sharpe(r: pd.Series, n_trials: int, sr_var: float) -> float | None:
-    """Bailey & López de Prado（2014）的 Deflated Sharpe Ratio，用月報酬。"""
-    m = ((1 + r.dropna()).resample("ME").prod() - 1)
+def _monthly(r: pd.Series) -> pd.Series:
+    return (1 + r.dropna()).resample("ME").prod() - 1
+
+
+def excess_monthly(d: pd.DataFrame) -> pd.Series:
+    """月超額報酬：策略 − 0050。"""
+    return _monthly(d["strategy"]) - _monthly(d["etf"])
+
+
+def _dsr(m: pd.Series, n_trials: int, sr_var: float) -> float | None:
     t = len(m)
     if t < 24 or m.std() == 0:
         return None
@@ -445,6 +455,30 @@ def deflated_sharpe(r: pd.Series, n_trials: int, sr_var: float) -> float | None:
     return nd.cdf((sr - sr0) * math.sqrt(t - 1) / denom)
 
 
+def deflated_sharpe(r: pd.Series, n_trials: int, sr_var: float) -> float | None:
+    """Bailey & López de Prado（2014）的 Deflated Sharpe Ratio，用月報酬。"""
+    return _dsr(_monthly(r), n_trials, sr_var)
+
+
+def deflated_sharpe_excess(d: pd.DataFrame, n_trials: int, sr_var: float | None) -> float | None:
+    """同上，但檢定的是相對 0050 的月超額報酬（資訊比率）大於 0；sr_var 是各設定超額 Sharpe 的變異數。"""
+    return None if sr_var is None else _dsr(excess_monthly(d), n_trials, sr_var)
+
+
+def _sharpe_ex(d: pd.DataFrame) -> float | None:
+    m = excess_monthly(d)
+    return float(m.mean() / m.std()) if len(m) > 1 and m.std() > 0 else None
+
+
+def trial_stats(cfg_id: str) -> tuple[int, int, float, float | None]:
+    """讀嘗試紀錄（不寫入），回傳（這個策略名稱試過幾個設定、全部設定數、月 Sharpe 變異數、超額 Sharpe 變異數）。"""
+    rows = [json.loads(l) for l in TRIALS.read_text().splitlines() if l.strip()] if TRIALS.exists() else []
+    srs = [r["sharpe_m"] for r in rows if r.get("sharpe_m") is not None]
+    exs = [r["sharpe_ex"] for r in rows if r.get("sharpe_ex") is not None]
+    return (sum(r.get("id") == cfg_id for r in rows), max(len(rows), 1), float(np.var(srs)) if len(srs) > 1 else 0.0,
+            float(np.var(exs)) if len(exs) > 1 else None)
+
+
 def log_trial(cfg: dict, res: dict) -> tuple[int, int, float]:
     """寫入嘗試紀錄（同設定不重複算），回傳（這個策略名稱試過幾個設定、全部設定數、各設定月 Sharpe 變異數）。"""
     TRIALS.parent.mkdir(parents=True, exist_ok=True)
@@ -453,14 +487,16 @@ def log_trial(cfg: dict, res: dict) -> tuple[int, int, float]:
     if h not in {r["hash"] for r in rows}:
         p = perf(res["daily"]["strategy"])
         rows.append({"time": datetime.now().isoformat(timespec="seconds"), "id": cfg["id"], "name": cfg["name"],
-                     "hash": h, "sharpe_m": p.get("sharpe_m"), "cagr": p.get("cagr"), "config": cfg})
+                     "hash": h, "sharpe_m": p.get("sharpe_m"), "sharpe_ex": _sharpe_ex(res["daily"]),
+                     "cagr": p.get("cagr"), "config": cfg})
         with open(TRIALS, "a", encoding="utf-8") as f:
             f.write(json.dumps(rows[-1], ensure_ascii=False, default=str) + "\n")
     srs = [r["sharpe_m"] for r in rows if r.get("sharpe_m") is not None]
     return sum(r["id"] == cfg["id"] for r in rows), len(rows), float(np.var(srs)) if len(srs) > 1 else 0.0
 
 
-def scorecard(cfg: dict, res: dict, n_same: int, n_all: int, sr_var: float) -> dict:
+def scorecard(cfg: dict, res: dict, n_same: int, n_all: int, sr_var: float, sr_var_ex: float | None = None) -> dict:
+    """sr_var_ex 沒給就從嘗試紀錄讀。"""
     d, tr = res["daily"], res["trades"]
     out = {"periods": {}}
     for p, (a, b) in PERIODS.items():
@@ -478,6 +514,33 @@ def scorecard(cfg: dict, res: dict, n_same: int, n_all: int, sr_var: float) -> d
     out["final"] = float(res["nav"].iloc[-1])
     out["n_same"], out["n_all"] = n_same, n_all
     out["dsr"] = deflated_sharpe(d["strategy"], n_all, sr_var)
+    if sr_var_ex is None:
+        sr_var_ex = trial_stats(cfg["id"])[3]
+    out["dsr_excess"] = deflated_sharpe_excess(d, n_all, sr_var_ex)
+    out["hash"], out["asof"] = config_hash(cfg), str(d.index[-1].date())
+    return out
+
+
+def _clean(x):
+    """JSON 用：numpy 數字轉成 Python，NaN / inf 轉成 None。"""
+    if isinstance(x, dict):
+        return {k: _clean(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_clean(v) for v in x]
+    if isinstance(x, (np.integer,)):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        return float(x) if np.isfinite(x) else None
+    return x
+
+
+def save_result(cfg: dict, res: dict, sc: dict) -> Path:
+    """每日報酬（strategy、pool、etf）存 results/<id>.parquet，成績單存 results/<id>.json，給前端讀。"""
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    d = res["daily"][["strategy", "pool", "etf"]].rename_axis("date").reset_index()
+    d.to_parquet(RESULTS / f"{cfg['id']}.parquet", index=False)
+    out = RESULTS / f"{cfg['id']}.json"
+    out.write_text(json.dumps(_clean(sc), ensure_ascii=False, indent=1), encoding="utf-8")
     return out
 
 
@@ -509,12 +572,14 @@ def render(cfg: dict, res: dict, sc: dict) -> str:
                     f"<td>{_p(r.strategy - r.pool)}</td></tr>" for y, r in yr.iloc[::-1].iterrows())
     last = res["picks"][-1] if res["picks"] else {"signal": "—", "picks": []}
     dsr = "—" if sc["dsr"] is None else f"{sc['dsr'] * 100:.0f}%"
+    dsr_ex = "—" if sc.get("dsr_excess") is None else f"{sc['dsr_excess'] * 100:.0f}%"
     cfg_txt = e(json.dumps({k: cfg[k] for k in ("start", "capital", "universe", "select", "position", "risk", "cost")},
                            ensure_ascii=False, indent=1))
     tiles = [("期末資產", f"{sc['final']:,.0f} 元"), ("全期年化", _p(sc["periods"]["全期"]["strategy"]["cagr"])),
              ("樣本外年化", _p(sc["periods"]["樣本外 2019–"]["strategy"].get("cagr"))),
              ("最大回落", _p(sc["periods"]["全期"]["strategy"]["mdd"])),
-             ("交易成本 / 年（佔資產）", f"{sc['cost_per_year_pct']:.1f}%"), ("Deflated Sharpe", dsr)]
+             ("交易成本 / 年（佔資產）", f"{sc['cost_per_year_pct']:.1f}%"), ("Deflated Sharpe", dsr),
+             (f"Deflated Sharpe（對 {ETF}）", dsr_ex)]
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(cfg['name'])} 策略回測</title>
 <style>{CSS}</style></head><body><main>
@@ -523,7 +588,8 @@ def render(cfg: dict, res: dict, sc: dict) -> str:
 <div class="tiles">{"".join(f'<div class="tile"><span>{k}</span><b>{v}</b></div>' for k, v in tiles)}</div>
 <p class="muted">這是 strategy.py 試過的第 {sc['n_all']} 個設定（同一個策略檔 {sc['n_same']} 個）。
 Deflated Sharpe = 扣掉「試了 {sc['n_all']} 個設定挑最好的」運氣成分後，月 Sharpe 仍大於 0 的機率；
-低於 95% 代表成績可能主要來自嘗試次數。</p>
+低於 95% 代表成績可能主要來自嘗試次數。「對 {ETF}」版檢定的是月超額報酬（策略 − {ETF}）的 Sharpe 大於 0，
+比較能回答「有沒有贏過直接買 {ETF}」。</p>
 <h2>淨值</h2><div class="charts">{chart}{chart_dd}</div>
 <h2>各期間</h2><div class="wrap"><table><tr><th>期間</th><th>策略年化</th><th>同池等權</th><th>{ETF}</th><th>波動</th>
 <th>Sharpe</th><th>最大回落</th><th>最長回落天數</th></tr>{rows}</table></div>
@@ -549,13 +615,11 @@ def main():
     for path in a.configs:
         cfg = load_config(path)
         res = simulate(cfg, panel, rets)
-        if a.no_log:
-            rows = [json.loads(l) for l in TRIALS.read_text().splitlines()] if TRIALS.exists() else []
-            srs = [r["sharpe_m"] for r in rows if r.get("sharpe_m") is not None]
-            n_same, n_all, var = sum(r["id"] == cfg["id"] for r in rows), max(len(rows), 1), float(np.var(srs)) if len(srs) > 1 else 0.0
-        else:
-            n_same, n_all, var = log_trial(cfg, res)
-        sc = scorecard(cfg, res, n_same, n_all, var)
+        if not a.no_log:
+            log_trial(cfg, res)
+        n_same, n_all, var, var_ex = trial_stats(cfg["id"])
+        sc = scorecard(cfg, res, n_same, n_all, var, var_ex)
+        save_result(cfg, res, sc)
         out = REPORTS / f"strategy_{cfg['id']}.html"
         out.write_text(render(cfg, res, sc), encoding="utf-8")
         f, o = sc["periods"]["全期"], sc["periods"]["樣本外 2019–"]
@@ -563,7 +627,8 @@ def main():
                         "樣本外年化": _p(o["strategy"].get("cagr")), "同池等權樣本外": _p(o["pool"].get("cagr")),
                         f"{ETF}樣本外": _p(o["etf"].get("cagr")), "Sharpe": round(f["strategy"]["sharpe"], 2),
                         "最大回落": _p(f["strategy"]["mdd"]), "成本/年": f"{sc['cost_per_year_pct']:.1f}%",
-                        "DSR": "—" if sc["dsr"] is None else f"{sc['dsr'] * 100:.0f}%"})
+                        "DSR": "—" if sc["dsr"] is None else f"{sc['dsr'] * 100:.0f}%",
+                        f"DSR對{ETF}": "—" if sc["dsr_excess"] is None else f"{sc['dsr_excess'] * 100:.0f}%"})
         print(f"{cfg['name']} → {out.relative_to(ROOT)}")
     print(pd.DataFrame(summary).set_index("策略").to_string())
 

@@ -27,7 +27,8 @@ in_top = False 的列是同一期的基準池。淨值 data/paper/nav.parquet �
     策略檔改過內容 → 雜湊不同 → 從改的那期重新起算一條新紀錄，舊紀錄保留
   - 淨值用 strategy.simulate 重播已記錄的權重（不重新選股），停損、每日大盤濾網、回落控制照策略設定逐日執行，
     資金、成本、漲跌停規則同回測
-  - 摘要寫到 data/paper/strat_summary.json，給 daily.py 讀
+  - 摘要寫到 data/paper/strat_summary.json，給 daily.py 讀；淨值序列寫到 data/paper/strat_nav.parquet
+    （strategy、date、nav、pool、etf，起點 = 1），給前端畫圖
 """
 import argparse
 import json
@@ -52,6 +53,7 @@ STRATS_FILE = Path(__file__).parent / "paper_strategies.txt"
 STRAT_LEDGER = PAPER / "strat_ledger.parquet"
 STRAT_CONFIGS = PAPER / "strat_configs.json"
 STRAT_SUMMARY = PAPER / "strat_summary.json"
+STRAT_NAV = PAPER / "strat_nav.parquet"
 
 
 def load_ledger() -> pd.DataFrame:
@@ -216,10 +218,12 @@ def record_strategies(panel, rets, today: pd.Timestamp) -> list[str]:
     return msgs
 
 
-def strategy_summaries(panel, rets) -> list[dict]:
-    """目前在 paper_strategies.txt 裡的策略，各自最新設定那條紀錄的績效與持股。"""
+def strategy_summaries(panel, rets) -> tuple[list[dict], pd.DataFrame]:
+    """目前在 paper_strategies.txt 裡的策略，各自最新設定那條紀錄的績效與持股，加上淨值序列
+    （strategy、date、nav、pool、etf，三者起點都是 1）。"""
+    navs = []
     if not STRAT_LEDGER.exists():
-        return []
+        return [], pd.DataFrame(columns=["strategy", "date", "nav", "pool", "etf"])
     led = pd.read_parquet(STRAT_LEDGER)
     confs = json.loads(STRAT_CONFIGS.read_text())
     names = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date", "code", "name"],
@@ -257,8 +261,13 @@ def strategy_summaries(panel, rets) -> list[dict]:
                          "fees": float(res["trades"]["fees"].sum() + res["trades"]["tax"].sum()),
                          "holdings": [{"code": c, "name": names.get(c), "value": float(v), "weight": float(v / total)}
                                       for c, v in sorted(res["hold"].items(), key=lambda x: -x[1])]})
+            cum = (1 + d[["pool", "etf"]]).cumprod()
+            navs.append(pd.DataFrame({"strategy": cfg["id"], "date": nv.index, "nav": (nv / cfg["capital"]).values,
+                                      "pool": cum["pool"].reindex(nv.index).values,
+                                      "etf": cum["etf"].reindex(nv.index).values}))
         out.append(item)
-    return out
+    return out, (pd.concat(navs, ignore_index=True) if navs else
+                 pd.DataFrame(columns=["strategy", "date", "nav", "pool", "etf"]))
 
 
 def load_strategy_summaries() -> list[dict]:
@@ -292,9 +301,10 @@ def main():
     if not a.dry_run:
         for m in record_strategies(panel, rets, pd.Timestamp.today().normalize()):
             print(m)
-    sums = strategy_summaries(panel, rets)
+    sums, navs = strategy_summaries(panel, rets)
     PAPER.mkdir(exist_ok=True)
     STRAT_SUMMARY.write_text(json.dumps(sums, ensure_ascii=False, indent=1))
+    navs.to_parquet(STRAT_NAV, index=False)
     for x in sums:
         perf = (f"累積 {x['ret']:+.2%}（{ETF} {x['etf']:+.2%}）、最大回落 {x['mdd']:.2%}、現金 {x['cash_pct']:.0%}"
                 if "ret" in x else "等下一個交易日收盤進場")

@@ -17,6 +17,7 @@
   - 有大盤濾網：均線 100 / 250 日、均線下留五成；有目標波動：目標 × 0.8 / × 1.2
   - 有停損：幅度 × 0.75 / × 1.25、固定 / 移動停損互換；有回落控制：門檻 × 2/3 / × 4/3
 所有變體都記進 data/strategy/trials.jsonl，讓 Deflated Sharpe 的「試過幾次」反映真實次數。
+每個策略另存 data/strategy/results/<id>_robust.json：{"variants": [...], "segments": [...]}，欄位同 HTML 表格，數字不加格式。
 
 相對 0050：用月報酬算
   - 超額 = 策略 − 0050，年化平均與 Newey-West t（lag 3）
@@ -26,13 +27,16 @@
 import argparse
 import copy
 import html
+import json
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from report import CSS
-from strategy import ETF, REPORTS, deflated_sharpe, load_config, load_data, log_trial, perf, simulate
+from strategy import (ETF, REPORTS, RESULTS, _clean, config_hash, deflated_sharpe, deflated_sharpe_excess, load_config,
+                      load_data, log_trial, perf, simulate, trial_stats)
 from technicals import nw_t
 
 SEGMENTS = {"2011–2015": ("2011-01-01", "2015-12-31"), "2016–2018": ("2016-01-01", "2018-12-31"),
@@ -126,7 +130,6 @@ def main():
     a = ap.parse_args()
     panel, rets = load_data()
     sections, console, originals = [], [], {}
-    trial_info = None
     for path in a.configs:
         base = load_config(Path(path))
         res_by = {}
@@ -134,10 +137,10 @@ def main():
             res = simulate(cfg, panel, rets)
             res_by[tag] = res
             if not a.no_log:
-                trial_info = log_trial(cfg, res)
+                log_trial(cfg, res)
             print(f"  {base['id']} {tag} 完成")
         # 參數微調：樣本外
-        rows = []
+        rows, jv, js = [], [], []
         for tag, res in res_by.items():
             o = vs_etf(res["daily"], *OOS)
             tr = res["trades"]
@@ -145,33 +148,46 @@ def main():
             cost = ((tr["fees"] + tr["tax"]) / tr["total"]).sum() / yrs
             rows.append([tag, _p(o["cagr"]), _p(o["etf_cagr"]), _p(o["excess"]), _t(o["t_excess"]),
                          _p(o["alpha"]), f"{o['beta']:.2f}", _t(o["t_alpha"]), _p(o["mdd"]), f"{cost * 100:.1f}%"])
+            jv.append({"變體": tag, "樣本外年化": o["cagr"], "0050": o["etf_cagr"], "超額/年": o["excess"],
+                       "超額 t": o["t_excess"], "α/年": o["alpha"], "β": o["beta"], "α t": o["t_alpha"],
+                       "最大回落": o["mdd"], "成本/年": cost})
             console.append({"策略": base["id"], "變體": tag, "樣本外年化": _p(o["cagr"]), "超額/年": _p(o["excess"]),
                             "t": _t(o["t_excess"]), "α/年": _p(o["alpha"]), "β": round(o["beta"], 2),
                             "α t": _t(o["t_alpha"]), "回落": _p(o["mdd"])})
         grid = table(["變體", "樣本外年化", "0050", "超額/年", "超額 t", "α/年", "β", "α t", "最大回落", "成本/年"], rows)
         # 分段：原設定
         d = res_by["原設定"]["daily"]
-        originals[base["name"]] = d["strategy"]
+        originals[base["name"]] = d
         seg_rows = []
         for name, (s, e) in SEGMENTS.items():
             o = vs_etf(d, s, e)
             if not o:
                 continue
+            js.append({"分段": name, "年化": o["cagr"], "0050 年化": o["etf_cagr"], "超額 / 年": o["excess"],
+                       "超額 t": o["t_excess"], "α / 年": o["alpha"], "β": o["beta"], "α t": o["t_alpha"],
+                       "贏 0050 月份": o["win"], "最大回落": o["mdd"]})
             seg_rows.append([name, _p(o["cagr"]), _p(o["etf_cagr"]), _p(o["excess"]), _t(o["t_excess"]),
                              _p(o["alpha"]), f"{o['beta']:.2f}", _t(o["t_alpha"]), f"{o['win'] * 100:.0f}%",
                              _p(o["mdd"])])
+        RESULTS.mkdir(parents=True, exist_ok=True)
+        payload = {"id": base["id"], "name": base["name"], "hash": config_hash(base), "oos_start": OOS[0],
+                   "asof": str(d.index[-1].date()), "generated": datetime.now().isoformat(timespec="seconds"),
+                   "variants": jv, "segments": js}
+        (RESULTS / f"{base['id']}_robust.json").write_text(json.dumps(_clean(payload), ensure_ascii=False, indent=1),
+                                                          encoding="utf-8")
         segs = table(["期間", "年化", "0050", "超額/年", "超額 t", "α/年", "β", "α t", "贏 0050 月份", "最大回落"],
                      seg_rows)
         sections.append(f"<h2>{html.escape(base['name'])}</h2><p class='muted'>{html.escape(base['description'])}</p>"
                         f"<h3>參數微調（樣本外 2019–）</h3>{grid}<h3>分段（原設定）</h3>{segs}")
-    dsr_note = ""
-    if trial_info:
-        n_same, n_all, var = trial_info
-        dsr = {k: deflated_sharpe(r, n_all, var) for k, r in originals.items()}
-        dsr_note = (f"<p>嘗試紀錄目前共 {n_all} 個設定（各設定月 Sharpe 變異數 {var:.4f}）。扣掉試了這麼多次的運氣後，"
-                    "原設定的 Deflated Sharpe：" + "、".join(f"{html.escape(k)} {v * 100:.0f}%" for k, v in dsr.items()
-                                                          if v is not None) + "</p>")
-        print(f"嘗試 {n_all} 次；DSR：" + "、".join(f"{k} {v * 100:.0f}%" for k, v in dsr.items() if v is not None))
+    n_all, var, var_ex = trial_stats("")[1:]
+    dsr = {k: (deflated_sharpe(d["strategy"], n_all, var), deflated_sharpe_excess(d, n_all, var_ex))
+           for k, d in originals.items()}
+    def f(v):
+        return "—" if v is None else f"{v * 100:.0f}%"
+    dsr_note = (f"<p>嘗試紀錄目前共 {n_all} 個設定。扣掉試了這麼多次的運氣後，原設定的 Deflated Sharpe"
+                f"（月 Sharpe &gt; 0／月超額報酬對 {ETF} 的 Sharpe &gt; 0）：" +
+                "、".join(f"{html.escape(k)} {f(a)}／{f(b)}" for k, (a, b) in dsr.items()) + "</p>")
+    print(f"嘗試 {n_all} 次；DSR（>0／對 {ETF}）：" + "、".join(f"{k} {f(a)}／{f(b)}" for k, (a, b) in dsr.items()))
     page = f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>策略穩健性檢查</title>
 <style>{CSS}</style></head><body><main>

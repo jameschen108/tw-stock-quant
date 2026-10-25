@@ -129,6 +129,9 @@ def _strat_nav() -> None:
     if not {"date", "strategy", "nav"} <= set(df.columns):
         st.warning("strat_nav.parquet 缺 strategy / date / nav 欄，先不畫。")
         return
+    if df.empty:
+        common.empty("data/paper/strat_nav.parquet 已在，目前 0 列。10/26 進場之後才有淨值曲線。")
+        return
     names = sorted(df["strategy"].dropna().unique())
     pick = st.multiselect("要畫的策略", names, default=names, key="strat_nav_pick")
     view = df[df["strategy"].isin(pick)].sort_values("date")

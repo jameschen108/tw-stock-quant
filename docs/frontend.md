@@ -72,7 +72,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 |---|---|
 | 策略清單 | `strategies/*.toml`，用 `strategy.load_config(path)` 讀 |
 | 淨值疊圖（勾選多個策略 + 同池等權 + 0050）、回落圖 | `strategy.simulate(cfg, panel, rets)["daily"]`；`panel, rets = strategy.load_data()` 要快取 |
-| 成績單：各期間年化、波動、Sharpe、最大回落、成本 / 年、換手、DSR | `strategy.scorecard(...)`，或讀後端快取（見「需要後端配合」） |
+| 成績單：各期間年化、波動、Sharpe、最大回落、成本 / 年、換手、DSR、對 0050 的 DSR | `strategy.scorecard(...)` 的 `dsr` 與 `dsr_excess`，或讀 `data/strategy/results/<id>.json` |
 | 每年報酬與對同池超額 | 同上，`daily` 依年份彙總 |
 | 分段與相對 0050：超額、t、α、β | `robust.vs_etf(daily, start, end)`；分段期間用 `robust.SEGMENTS` |
 | 參數微調結果（每個策略 9–12 個變體） | `robust.variants(cfg)` 加 `simulate`，或讀後端快取 |
@@ -99,7 +99,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 各策略目前持股（市值、權重）或本期目標權重 | 同上，`holdings` / `targets` |
 | 每期紀錄（訊號日、選了哪些、權重） | `data/paper/strat_ledger.parquet`：signal_date、strategy、hash、code、weight、in_pick、pick_order、regime_on |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
-| 各策略淨值曲線 | **需要後端配合**，見下 |
+| 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
 
 ## 頁 5（可選）：分析師問答
 
@@ -109,15 +109,15 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 - 每輪對話顯示花費。
 - 對話紀錄同 `analyst.log_turn`，存在 `logs/analyst/`。
 
-## 需要後端配合（我來做）
+## 後端已經提供
 
-| 項目 | 原因 |
+| 項目 | 前端怎麼用 |
 |---|---|
-| 多策略模擬的淨值序列存成 `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf） | 目前只存摘要，前端畫不出淨值曲線 |
-| `strategy.py` 回測後把每日淨值和成績單存到 `data/strategy/results/<id>.parquet` / `.json` | 前端不用每次重跑 `simulate` |
-| `robust.py` 另外輸出 JSON（每個變體的樣本外指標、分段表） | 目前只有 HTML，前端無法做互動比較 |
-| Deflated Sharpe 改成檢定相對 0050 的超額報酬，並保留原本的版本 | 現在的 DSR 只檢定「Sharpe 大於 0」，幾乎都顯示 90% 以上，沒有參考價值 |
-| 宣告前端需要的套件（目前每支腳本各自用 PEP 723 宣告） | 前端要一次載入 pandas、pyarrow、anthropic，加上前端框架 |
+| `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf，起點 = 1） | 頁 4「各策略淨值」。0 列時顯示進場前提示 |
+| `data/strategy/results/<id>.parquet` / `.json` | 頁 3 優先讀這份。json 的 `hash`、`asof` 用來判斷快取舊不舊；雜湊不符就改現場回測 |
+| `data/strategy/results/<id>_robust.json`（`variants`、`segments`，數字未格式化） | 頁 3「參數微調」直接畫表。另有 `reports/robust_all.html` |
+| 成績單 `dsr_excess`（對 0050）；`dsr` 保留 | 兩張 KPI 都顯示。`scorecard` 沒傳超額變異數時會自己讀嘗試紀錄 |
+| `frontend/requirements.txt` | 啟動見檔案開頭 |
 
 ## 建議順序
 

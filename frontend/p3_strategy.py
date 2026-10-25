@@ -64,16 +64,32 @@ def _trial_stats(cfg_id: str) -> tuple[int, int, float]:
     return n_same, n_all, var
 
 
+def _cache_status(cfg: dict, score: dict) -> str | None:
+    """快取和現在的設定、價格日不一致時回傳原因。雜湊不符代表不能用。"""
+    if score.get("hash") != strategy.config_hash(cfg):
+        return "雜湊不符"
+    last = common.load_status().get("last_price_date")
+    if score.get("asof") and last and str(score["asof"]) < str(last):
+        return f"資料日 {score['asof']}，價格已到 {last}"
+    return None
+
+
 def _run(sig: str, cfg: dict):
     saved = _saved(cfg["id"])
+    skipped = None
     if saved is not None:
-        return saved[0], saved[1], "後端快取"
+        stale = _cache_status(cfg, saved[1])
+        if stale is None:
+            return saved[0], saved[1], "後端快取"
+        if stale != "雜湊不符":
+            return saved[0], saved[1], f"後端快取（{stale}）"
+        skipped = "設定已改，後端快取雜湊不符。"
     res = common.cached_simulate(sig, cfg)
     if res is None:
         return None, None, "現場"
     n_same, n_all, var = _trial_stats(cfg["id"])
     sc = strategy.scorecard(cfg, res, n_same, n_all, var)
-    return res["daily"], sc, "現場（已快取，未寫入嘗試紀錄）"
+    return res["daily"], sc, f"{skipped or ''}現場（已快取，未寫入嘗試紀錄）"
 
 
 def _score_table(sc: dict) -> None:
@@ -83,7 +99,10 @@ def _score_table(sc: dict) -> None:
     full = (sc.get("periods") or {}).get("全期", {}).get("strategy") or {}
     oos_b = (sc.get("periods") or {}).get("樣本外 2019–", {})
     oos = oos_b.get("strategy") or {}
-    dsr = sc.get("dsr")
+    def _dsr(key: str) -> str:
+        v = sc.get(key)
+        return "—" if v is None else f"{v * 100:.0f}%"
+
     common.kpis([
         ("期末資產", f"{sc['final']:,.0f}" if sc.get("final") is not None else "—", "元"),
         ("全期年化", common.signed_html(full.get("cagr")), f"Sharpe {common.plain(full.get('sharpe'), 2)}"),
@@ -91,8 +110,8 @@ def _score_table(sc: dict) -> None:
          f"同池 {common.pct((oos_b.get('pool') or {}).get('cagr'))}・0050 {common.pct((oos_b.get('etf') or {}).get('cagr'))}"),
         ("最大回落", common.pct(full.get("mdd")), f"{full.get('mdd_days', '—')} 個交易日沒回到高點"),
         ("成本 / 年", common.plain(sc.get("cost_per_year_pct"), 2, "%"), f"月換手 {common.pct(sc.get('turnover_month')).lstrip('+')}"),
-        ("Deflated Sharpe", "—" if dsr is None else f"{dsr * 100:.0f}%",
-         f"試過 {sc.get('n_all', '—')} 個設定；檢定月 Sharpe > 0"),
+        ("Deflated Sharpe", _dsr("dsr"), f"試過 {sc.get('n_all', '—')} 個設定；檢定月 Sharpe > 0"),
+        ("對 0050 的 DSR", _dsr("dsr_excess"), "檢定月超額 Sharpe > 0"),
     ])
     rows = []
     for period, block in sc["periods"].items():
@@ -172,15 +191,26 @@ def _robust_file(cfg_id: str):
     return None, None
 
 
+_ROBUST_FMT = {"樣本外年化": "{:+.1%}", "0050": "{:+.1%}", "超額/年": "{:+.1%}", "α/年": "{:+.1%}",
+               "最大回落": "{:.1%}", "成本/年": "{:.2%}", "年化": "{:+.1%}", "0050 年化": "{:+.1%}",
+               "超額 / 年": "{:+.1%}", "α / 年": "{:+.1%}", "贏 0050 月份": "{:.0%}",
+               "超額 t": "{:+.2f}", "α t": "{:+.2f}", "β": "{:.2f}"}
+_ROBUST_SIGNED = ["樣本外年化", "超額/年", "α/年", "年化", "0050 年化", "超額 / 年", "α / 年"]
+
+
 def _show_robust_json(payload) -> None:
+    def _table(rows: list) -> None:
+        df = pd.DataFrame(rows)
+        st.dataframe(common.styled(df, fmt=_ROBUST_FMT, signed=_ROBUST_SIGNED), hide_index=True)
+
     if isinstance(payload, dict) and "variants" in payload:
         st.markdown("**變體**")
-        st.dataframe(pd.DataFrame(payload["variants"]), hide_index=True)
+        _table(payload["variants"])
         if payload.get("segments"):
             st.markdown("**分段**")
-            st.dataframe(pd.DataFrame(payload["segments"]), hide_index=True)
+            _table(payload["segments"])
     elif isinstance(payload, list):
-        st.dataframe(pd.DataFrame(payload), hide_index=True)
+        _table(payload)
     else:
         st.json(payload)
 
@@ -296,7 +326,9 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
 
 
 def _compare(sig: str, paths: list[Path], labels: dict) -> None:
-    st.caption("每個策略第一次回測約 3–5 秒（第一次還要載入整段月資料與日報酬），之後用快取，也不寫入嘗試紀錄。")
+    st.caption("優先讀 data/strategy/results/ 的後端快取，不寫嘗試紀錄。設定雜湊對不上就改現場回測；"
+               "快取資料日比價格日舊時仍用快取，並標出日期。資料或策略檔更新後要重跑 "
+               "`uv run strategy.py strategies/*.toml --no-log`。")
     chosen = st.multiselect("要比較的策略", paths, default=paths[:1], format_func=lambda p: labels[p],
                             key="cmp_pick", placeholder="選一個或多個策略")
     if not chosen:
@@ -324,11 +356,12 @@ def _compare(sig: str, paths: list[Path], labels: dict) -> None:
             o = sc["periods"]["樣本外 2019–"]["strategy"]
             rows.append({"策略": cfg["name"], "全期年化": f.get("cagr"), "樣本外年化": o.get("cagr"),
                          "Sharpe": f.get("sharpe"), "最大回落": f.get("mdd"), "成本/年%": sc.get("cost_per_year_pct"),
-                         "DSR": sc.get("dsr")})
+                         "DSR": sc.get("dsr"), "對 0050 的 DSR": sc.get("dsr_excess")})
         st.markdown("**並排比較**")
         st.dataframe(common.styled(pd.DataFrame(rows), fmt={"全期年化": "{:+.1%}", "樣本外年化": "{:+.1%}",
                                                             "Sharpe": "{:.2f}", "最大回落": "{:.1%}",
-                                                            "成本/年%": "{:.2f}", "DSR": "{:.0%}"},
+                                                            "成本/年%": "{:.2f}", "DSR": "{:.0%}",
+                                                            "對 0050 的 DSR": "{:.0%}"},
                                    signed=["全期年化", "樣本外年化"]), hide_index=True)
     for cfg, daily, sc, how in got:
         with st.expander(f"{cfg['name']}　成績單", expanded=len(got) == 1):
@@ -351,7 +384,11 @@ def _variants(sig: str, paths: list[Path], labels: dict) -> None:
     base = strategy.load_config(one)
     path_json, payload = _robust_file(base["id"])
     if payload is not None:
-        st.caption(f"後端 JSON：{path_json.relative_to(common.ROOT)}")
+        note = f"後端 JSON：{path_json.relative_to(common.ROOT)}"
+        stale = _cache_status(base, payload)
+        if stale:
+            note += f"。這份是舊的（{stale}）"
+        st.caption(note)
         _show_robust_json(payload)
     else:
         st.caption("還沒有這個策略的穩健性 JSON（data/strategy/results/<id>_robust.json），可以現場重算。")
@@ -373,14 +410,16 @@ def _trial_log() -> None:
         common.empty("還沒有 trials.jsonl。")
         return
     df = pd.DataFrame([{"時間": r.get("time"), "代號": r.get("id"), "名稱": r.get("name"), "雜湊": r.get("hash"),
-                        "月 Sharpe": r.get("sharpe_m"), "年化": r.get("cagr")} for r in rows]).iloc[::-1]
+                        "月 Sharpe": r.get("sharpe_m"), "超額 Sharpe": r.get("sharpe_ex"),
+                        "年化": r.get("cagr")} for r in rows]).iloc[::-1]
     srs = df["月 Sharpe"].dropna()
     common.kpis([
         ("嘗試次數", f"{len(df)}", f"{df['代號'].nunique()} 個不同代號"),
         ("月 Sharpe 中位數", common.plain(srs.median(), 3), ""),
         ("月 Sharpe 最高", common.plain(srs.max(), 3), "挑最好的那個會高估實際表現"),
     ])
-    st.dataframe(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "年化": "{:+.1%}"}, signed=["年化"]), hide_index=True)
+    st.dataframe(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "超額 Sharpe": "{:.3f}", "年化": "{:+.1%}"},
+                               signed=["年化"]), hide_index=True)
 
 
 def _reports() -> None:

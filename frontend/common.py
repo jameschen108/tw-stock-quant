@@ -40,7 +40,11 @@ CSS = """
 [data-testid="stBottomBlockContainer"] {max-width: 1440px; margin: 0 auto;}
 h1, h2, h3 {letter-spacing: .01em;}
 div[data-testid="stMetricValue"] {font-size: 1.45rem;}
-.sbar {display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; font-size:.8rem; margin:.1rem 0 .2rem;}
+.sbar {display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; font-size:.8rem; margin:0;}
+[data-testid="stHorizontalBlock"]:has(.sbar) {align-items:center; margin-bottom:.15rem;}
+[data-testid="stHorizontalBlock"]:has(.sbar) [data-testid="stButton"] button {
+  border: 1px solid rgba(128,128,128,.22); background: transparent; min-height: 1.7rem;
+  padding: .05rem .7rem; font-size: .8rem; border-radius: 999px;}
 .chip {padding:.12rem .6rem; border-radius:999px; background:rgba(128,128,128,.10);
        border:1px solid rgba(128,128,128,.22); white-space:nowrap;}
 .chip b {font-weight:600;}
@@ -135,6 +139,76 @@ def load_status() -> dict:
     return json.loads(STATUS_FILE.read_text()) if STATUS_FILE.exists() else {}
 
 
+def _job_commands() -> list[tuple[str, str, list[str]]]:
+    tomls = sorted(p.relative_to(ROOT).as_posix() for p in (ROOT / "strategies").glob("*.toml"))
+    jobs = [
+        ("更新資料", "抓行情到每日速覽，含模擬持股和自選組合", ["uv", "run", "update.py"]),
+        ("重算模擬持股", "只跑 paper.py，不抓新資料", ["uv", "run", "paper.py"]),
+        ("自選組合月調", "只為月調組合記新的一期", ["uv", "run", "mine.py"]),
+    ]
+    if tomls:
+        jobs.insert(1, ("重算回測快取", "策略檔或資料改過之後。不寫入嘗試紀錄",
+                        ["uv", "run", "strategy.py", *tomls, "--no-log"]))
+    return jobs
+
+
+def _run_job(title: str, args: list[str]) -> None:
+    import fcntl
+    import os
+    import subprocess
+    lock_path = ROOT / "logs" / ".frontend_job.lock"
+    lock_path.parent.mkdir(exist_ok=True)
+    with open(lock_path, "a+", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            st.warning("已經有一個指令在跑。")
+            return
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+        key = env.get("ANTHROPIC_API_KEY", "")
+        with st.status(f"{title}…", expanded=True) as box:
+            proc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, env=env)
+            lines: list[str] = []
+            slot = st.empty()
+            assert proc.stdout is not None
+            for raw in proc.stdout:
+                line = raw.rstrip("\n")
+                if key and key in line:
+                    line = line.replace(key, "***")
+                lines.append(line)
+                slot.code("\n".join(lines[-24:]), language="text")
+            code = proc.wait()
+            text = "\n".join(lines[-80:]) or "（沒有輸出）"
+            st.session_state["job_last"] = {"title": title, "code": code, "text": text}
+            if code == 0:
+                box.update(label=f"{title} 完成", state="complete", expanded=False)
+                st.cache_data.clear()
+            else:
+                box.update(label=f"{title} 結束碼 {code}", state="error")
+
+
+def _close_jobs() -> None:
+    st.session_state.jobs_open = False
+
+
+@st.dialog("執行", width="small", on_dismiss=_close_jobs)
+def _jobs_dialog() -> None:
+    import shutil
+    st.caption("只跑固定指令。滑過按鈕可看它做什麼。關掉視窗後，頁面會讀到新結果。")
+    if shutil.which("uv") is None:
+        st.error("找不到 uv，沒辦法從這裡執行。")
+        return
+    for i, (title, note, args) in enumerate(_job_commands()):
+        if st.button(title, key=f"job_{i}", help=note, width="stretch"):
+            _run_job(title, args)
+    last = st.session_state.get("job_last")
+    if last:
+        st.caption(f"上次：{last['title']}　結束碼 {last['code']}")
+        st.code(last["text"], language="text")
+
+
 def header() -> None:
     """每頁頂端：一列資料狀態、過舊或更新問題的提醒、免責。"""
     stt = load_status()
@@ -164,8 +238,14 @@ def header() -> None:
     fresh = report.freshness_warning()
     if fresh:
         chips.append('<span class="chip warn">資料可能過舊</span>')
-    st.markdown(f'<div class="sbar">{"".join(chips)}</div><div class="disc">{DISCLAIMER}</div>',
-                unsafe_allow_html=True)
+    bar, act = st.columns([1, 0.08], gap="small", vertical_alignment="center")
+    bar.markdown(f'<div class="sbar">{"".join(chips)}</div>', unsafe_allow_html=True)
+    with act:
+        if st.button("執行", type="tertiary", key="open_jobs_btn", help="更新資料或重算。只在這個視窗裡跑固定指令"):
+            st.session_state.jobs_open = True
+    st.markdown(f'<div class="disc">{DISCLAIMER}</div>', unsafe_allow_html=True)
+    if st.session_state.get("jobs_open"):
+        _jobs_dialog()
     if problems or ok is False:
         st.error("更新問題：" + ("；".join(problems) if problems else "fetch_ok 為 false"))
     if fresh:

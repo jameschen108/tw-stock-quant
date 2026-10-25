@@ -150,46 +150,95 @@ def _strat_nav() -> None:
         st.caption("只選一個策略時才疊上同池與 0050（各策略的池子不一定相同）。")
 
 
+_NAV_COLOR = {"自選（扣成本）": common.C_STRAT, "自選（不扣成本）": common.C_POOL,
+              "我的組合": common.C_STRAT, "同組等權": common.C_POOL, paper.ETF: common.C_ETF}
+
+
+def _weight_table(weights: pd.Series) -> None:
+    names = custom.names_of(list(weights.index))
+    df = pd.DataFrame({"代號": list(weights.index), "名稱": [names.get(c, "") for c in weights.index],
+                       "目標權重": weights.values})
+    st.dataframe(common.styled(df, fmt={"目標權重": "{:.1%}"}), hide_index=True)
+
+
+def _cmp_table(daily: pd.DataFrame, perf: dict, labels: list[tuple[str, str]]) -> None:
+    rows = []
+    for key, label in labels:
+        p = perf.get(key) or {}
+        rows.append({"組合": label, "總報酬": (1 + daily[key]).prod() - 1, "年化": p.get("cagr"),
+                     "波動": p.get("vol"), "Sharpe": p.get("sharpe"), "最大回落": p.get("mdd")})
+    df = pd.DataFrame(rows)
+    st.dataframe(common.styled(df, fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
+                                        "Sharpe": "{:.2f}", "最大回落": "{:.1%}"},
+                               signed=["總報酬", "年化"]), hide_index=True)
+
+
+def _nav_chart(daily: pd.DataFrame, labels: list[tuple[str, str]], title: str, height: int = 380) -> None:
+    nav = (1 + daily).cumprod()
+    named = {label: nav[key] for key, label in labels}
+    common.chart(common.line_fig(nav.index, named, title, {k: _NAV_COLOR[k] for k in named}, height))
+
+
+def _cost_line(res: dict) -> str:
+    t = res["trades"]
+    blocked = [f"{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}" for _, r in t.iterrows() if r["blocked"]]
+    line = (f"期末資產 {res['nav'].iloc[-1]:,.0f} 元・手續費 {t['fees'].sum():,.0f}・證交稅 {t['tax'].sum():,.0f}・"
+            f"成交 {len(t)} 次")
+    return line + ("・" + "；".join(blocked) if blocked else "")
+
+
 def _custom() -> None:
-    st.caption("自己挑股票和起訖日回頭模擬：成本、零股取整、漲跌停規則同回測。代號用逗號分隔，可加 :權重（例 2330:50,2317:30）。")
+    st.caption("自己挑股票和起訖日回頭重播。進場是開始日的下一個交易日收盤，成本、零股取整、漲跌停同回測。"
+               "代號用逗號分隔，可加 :權重（例 2330:50,2317:30）。不寫檔。")
+    last = common.load_status().get("last_price_date")
+    end0 = pd.Timestamp(last) if last else pd.Timestamp.today().normalize()
     c1, c2, c3, c4 = st.columns([3, 1.2, 1.2, 1.2])
     spec = c1.text_input("股票代號", "2330,2317,2454", key="cu_codes")
     start = c2.date_input("開始日", pd.Timestamp("2023-01-03"), key="cu_start")
-    end = c3.date_input("結束日", pd.Timestamp.today().normalize(), key="cu_end")
+    end = c3.date_input("結束日", end0, max_value=end0, key="cu_end")
     cap = c4.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="cu_cap")
-    mode = st.radio("調整方式", ["買進持有", "每月調回目標權重"], horizontal=True, key="cu_mode")
-    try:
-        w = custom.parse_codes(spec)
-        res = custom.run(w, start, end, "none" if mode == "買進持有" else "monthly", cap)
-    except ValueError as e:
-        st.warning(str(e))
+    mode = st.segmented_control("調整方式", ["買進持有", "每月調回目標權重"], default="買進持有", key="cu_mode") or "買進持有"
+    if st.button("開始回測", icon=":material/play_arrow:", key="cu_run"):
+        try:
+            with st.spinner("回測中…"):
+                st.session_state["cu_res"] = custom.run(
+                    custom.parse_codes(spec), start, end, "none" if mode == "買進持有" else "monthly", float(cap))
+                st.session_state["cu_key"] = (spec, str(start), str(end), mode, float(cap))
+        except ValueError as e:
+            st.warning(str(e))
+            return
+        except Exception as e:
+            st.error("回測失敗：" + common.scrub(e))
+            return
+    res = st.session_state.get("cu_res")
+    if not res:
+        common.empty("填好代號和日期後按開始回測。")
         return
+    key = (spec, str(start), str(end), mode, float(cap))
+    if st.session_state.get("cu_key") != key:
+        st.caption("上面的條件已改，下面還是上一次的結果。")
     if res["missing"]:
         st.warning("期間內沒有行情，已略過：" + "、".join(res["missing"]))
-    nv, daily, p = res["nav"], res["daily"], res["perf"]
-    cols = st.columns(3)
-    for col, (k, label) in zip(cols, (("strategy", "自選（扣成本）"), ("pool", "自選（不扣成本）"), ("etf", paper.ETF))):
-        col.metric(label, f"{p[k]['total']:+.1%}" if p[k] else "—",
-                   f"年化 {p[k]['cagr']:+.1%}・回落 {p[k]['mdd']:.1%}" if p[k] else "期間太短", delta_color="off")
-    fig = go.Figure()
-    for k, label, color in (("strategy", "自選（扣成本）", common.C_STRAT), ("pool", "自選（不扣成本）", common.C_POOL),
-                            ("etf", paper.ETF, common.C_ETF)):
-        fig.add_trace(go.Scatter(x=daily.index, y=(1 + daily[k]).cumprod(), name=label, mode="lines",
-                                 line=dict(color=color, width=1.8 if k == "strategy" else 1.2)))
-    common.chart(common.fig_layout(fig, "累積淨值（起點 = 1）", 380))
-    names = custom.names_of(list(res["weights"].index))
-    st.dataframe(pd.DataFrame({"代號": res["weights"].index, "名稱": [names.get(c, "") for c in res["weights"].index],
-                               "目標權重": res["weights"].values}), hide_index=True, width="stretch",
-                 column_config={"目標權重": st.column_config.NumberColumn(format="percent")})
-    t = res["trades"]
-    st.caption(f"期末資產 {nv.iloc[-1]:,.0f} 元・手續費 {t['fees'].sum():,.0f}・證交稅 {t['tax'].sum():,.0f}・"
-               f"成交 {len(t)} 次。" + "".join(f"\n{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}。"
-                                               for _, r in t.iterrows() if r["blocked"]))
+    labels = [("strategy", "自選（扣成本）"), ("pool", "自選（不扣成本）"), ("etf", paper.ETF)]
+    p = res["perf"].get("strategy") or {}
+    common.kpis([
+        ("總報酬", common.signed_html((1 + res["daily"]["strategy"]).prod() - 1, 2), "扣成本"),
+        ("年化", common.signed_html(p.get("cagr")), "不到 20 個交易日不算" if not p else ""),
+        ("Sharpe", common.plain(p.get("sharpe"), 2), ""),
+        ("最大回落", common.pct(p.get("mdd")), f"{p.get('mdd_days', '—')} 個交易日沒回到高點" if p else ""),
+        ("期末資產", f"{res['nav'].iloc[-1]:,.0f}", "元"),
+    ])
+    _nav_chart(res["daily"], labels, "累積淨值（起點 = 1）")
+    _cmp_table(res["daily"], res["perf"], labels)
+    st.markdown("**目標權重**")
+    _weight_table(res["weights"])
+    st.caption(_cost_line(res) + "。不扣成本的那條是同一組目標權重買進持有。")
 
 
 def _mine() -> None:
-    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去，要看過去用「自選股模擬」）。隔一個交易日收盤進場，成本與回測相同。"
-               "月調組合在新月份自動調回目標權重，其餘只在你改持股時調整。")
+    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；要看過去用「自選股回測」）。"
+               "隔一個交易日收盤進場。月調組合在新月份由 update.py 調回目標權重，其餘只在你改持股時調整。"
+               "紀錄寫進 data/paper/mine_ledger.parquet，只追加。")
     meta = {k: v for k, v in mine.load_meta().items() if not v["archived"]}
     with st.expander("建立新組合"):
         c1, c2, c3 = st.columns([1.5, 3, 1.2])
@@ -197,13 +246,15 @@ def _mine() -> None:
         spec = c2.text_input("股票代號（可加 :權重）", "2330,2317,2454", key="mn_spec")
         cap = c3.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="mn_cap")
         monthly = st.checkbox("每月調回目標權重", key="mn_monthly")
-        if st.button("建立", key="mn_create"):
+        if st.button("建立", icon=":material/add:", key="mn_create"):
             try:
-                sig = mine.create(name.strip(), custom.parse_codes(spec), monthly, cap)
+                sig = mine.create(name.strip(), custom.parse_codes(spec), monthly, float(cap))
                 st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
                 st.rerun()
             except ValueError as e:
                 st.warning(str(e))
+            except Exception as e:
+                st.error("建立失敗：" + common.scrub(e))
     if not meta:
         common.empty("還沒有自選組合。")
         return
@@ -211,31 +262,38 @@ def _mine() -> None:
     m = meta[name]
     sigs = mine._latest_signals(mine.load_ledger(), name)
     cur = sigs[max(sigs)]
-    names = custom.names_of(list(cur.index))
-    st.caption(f"建立於 {m['created']}・本金 {m['capital']:,.0f}・{'每月調回目標權重' if m['rebalance'] == 'monthly' else '只在改動時調整'}"
-               f"・{len(sigs)} 次訊號（最近 {max(sigs):%Y-%m-%d}）")
-    st.dataframe(pd.DataFrame({"代號": cur.index, "名稱": [names.get(c, "") for c in cur.index], "目標權重": cur.values}),
-                 hide_index=True, width="stretch", column_config={"目標權重": st.column_config.NumberColumn(format="percent")})
-    res = mine.replay(name)
+    common.kpis([
+        ("建立日", common.esc(m["created"]), f"本金 {m['capital']:,.0f} 元"),
+        ("調整", "每月調回" if m["rebalance"] == "monthly" else "只在改動時", f"{len(sigs)} 次訊號"),
+        ("最近訊號", f"{max(sigs):%Y-%m-%d}", "隔一個交易日收盤成交"),
+    ])
+    st.markdown("**目前目標權重**")
+    _weight_table(cur)
+    with st.spinner("重算淨值…"):
+        res = mine.replay(name)
     if res is None:
         common.empty("訊號已記下，等下一個交易日收盤進場後才有淨值。")
     else:
-        daily, p = res["daily"], res["perf"]
-        tot = lambda k: (1 + daily[k]).prod() - 1
-        cols = st.columns(3)
-        for col, (k, label) in zip(cols, (("strategy", "我的組合（扣成本）"), ("pool", "同組等權（不扣成本）"), ("etf", paper.ETF))):
-            col.metric(label, f"{tot(k):+.1%}", f"回落 {p[k]['mdd']:.1%}" if p[k] else "期間太短", delta_color="off")
-        fig = go.Figure()
-        for k, label, color in (("strategy", "我的組合", common.C_STRAT), ("pool", "同組等權", common.C_POOL),
-                                ("etf", paper.ETF, common.C_ETF)):
-            fig.add_trace(go.Scatter(x=daily.index, y=(1 + daily[k]).cumprod(), name=label, mode="lines",
-                                     line=dict(color=color, width=1.8 if k == "strategy" else 1.2)))
-        common.chart(common.fig_layout(fig, "累積淨值（起點 = 1）", 340))
-        t = res["trades"]
-        st.caption(f"資產 {res['nav'].iloc[-1]:,.0f} 元・手續費 {t['fees'].sum():,.0f}・證交稅 {t['tax'].sum():,.0f}"
-                   + "".join(f"\n{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}。" for _, r in t.iterrows() if r["blocked"]))
+        labels = [("strategy", "我的組合"), ("pool", "同組等權"), ("etf", paper.ETF)]
+        p = res["perf"].get("strategy") or {}
+        common.kpis([
+            ("累積報酬", common.signed_html((1 + res["daily"]["strategy"]).prod() - 1, 2), "扣成本"),
+            ("同組等權", common.signed_html((1 + res["daily"]["pool"]).prod() - 1, 2), "不扣成本"),
+            (paper.ETF, common.signed_html((1 + res["daily"]["etf"]).prod() - 1, 2), "不扣成本"),
+            ("最大回落", common.pct(p.get("mdd")), "" if p else "不到 20 個交易日不算"),
+            ("期末資產", f"{res['nav'].iloc[-1]:,.0f}", "元"),
+        ])
+        _nav_chart(res["daily"], labels, "累積淨值（起點 = 1）", 340)
+        _cmp_table(res["daily"], res["perf"], labels)
+        st.caption(_cost_line(res) + "。同組等權不扣成本。")
+    if len(sigs) > 1:
+        with st.expander(f"歷次訊號（{len(sigs)}）"):
+            rows = [{"訊號日": f"{s:%Y-%m-%d}", "代號": c, "目標權重": float(w)}
+                    for s, weights in sigs.items() for c, w in weights.items()]
+            st.dataframe(common.styled(pd.DataFrame(rows), fmt={"目標權重": "{:.1%}"}), hide_index=True)
     with st.expander("改持股 / 封存"):
-        spec = st.text_input("新的持股（代號:權重）", ",".join(f"{c}:{w * 100:.0f}" for c, w in cur.items()), key=f"mn_edit_{name}")
+        spec = st.text_input("新的持股（代號:權重）", ",".join(f"{c}:{w * 100:.4g}" for c, w in cur.items()),
+                             key=f"mn_edit_{name}")
         c1, c2 = st.columns(2)
         if c1.button("記錄新持股", key=f"mn_save_{name}"):
             try:
@@ -244,9 +302,16 @@ def _mine() -> None:
                 st.rerun()
             except ValueError as e:
                 st.warning(str(e))
+            except Exception as e:
+                st.error("記錄失敗：" + common.scrub(e))
         if c2.button("封存這個組合", key=f"mn_arch_{name}"):
-            mine.archive(name)
-            st.rerun()
+            st.session_state["mn_arch_ask"] = name
+        if st.session_state.get("mn_arch_ask") == name:
+            st.warning("封存後不再更新，已有紀錄保留。")
+            if st.button("確定封存", key=f"mn_arch_ok_{name}"):
+                mine.archive(name)
+                st.session_state.pop("mn_arch_ask", None)
+                st.rerun()
 
 
 sig = common.data_sig()
@@ -254,7 +319,7 @@ summary = common.cached_paper_summary(sig)
 strats = paper.load_strategy_summaries()
 common.page_title("模擬持股", f"即時紀錄，起點之前沒有資料・多策略 {len(strats)} 個")
 
-section = st.segmented_control("區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股模擬", "我的組合", "追蹤設定"],
+section = st.segmented_control("區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股回測", "自選組合", "追蹤設定"],
                                default="綜合分數前 30", key="paper_section", label_visibility="collapsed")
 section = section or "綜合分數前 30"
 if section == "綜合分數前 30":
@@ -265,9 +330,9 @@ elif section == "各策略淨值":
     _strat_nav()
 elif section == "每期紀錄":
     _ledger()
-elif section == "自選股模擬":
+elif section == "自選股回測":
     _custom()
-elif section == "我的組合":
+elif section == "自選組合":
     _mine()
 elif section == "追蹤設定":
     st.caption("paper_strategies.txt。這裡只顯示；改了要等下個月才會記新策略。")

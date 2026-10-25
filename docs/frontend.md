@@ -98,6 +98,8 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 多策略：起點、期數、目標曝險、大盤濾網狀態（距均線多少 %）、累積報酬、0050、同池、最大回落、現金、出場次數 | `paper.load_strategy_summaries()`（讀 `data/paper/strat_summary.json`） |
 | 各策略目前持股（市值、權重）或本期目標權重 | 同上，`holdings` / `targets` |
 | 每期紀錄（訊號日、選了哪些、權重） | `data/paper/strat_ledger.parquet`：signal_date、strategy、hash、code、weight、in_pick、pick_order、regime_on |
+| 自選股模擬（輸入代號、權重、起訖日、本金、買進持有或每月調回） | `custom.run()`：回傳 nav、daily（strategy、pool、etf）、perf、trades、missing、weights；不寫檔，每次現算 |
+| 我的組合（建立、改持股、封存；淨值對同組等權與 0050） | `mine.py`：紀錄 `data/paper/mine_ledger.parquet`（只追加）、設定 `mine_meta.json`；`mine.replay(name)` 每次現算淨值，還沒進場回傳 None |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
 

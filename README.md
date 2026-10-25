@@ -122,6 +122,8 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `technicals.py`、`regime.py` | 技術面訊號與大盤多空、市場狀態指標 |
 | `strategy.py`、`robust.py`、`strategies/*.toml` | 策略回測與穩健性檢查，策略以 TOML 設定 |
 | `paper.py` | 模擬持股，每月記錄前 N 名並追蹤報酬 |
+| `mine.py` | 自選股即時模擬：自己挑股票，從最新資料日起往後記錄並追蹤（可月調） |
+| `custom.py` | 自選股模擬：自己挑股票、權重和起訖日回頭重播，對比 0050 |
 | `diagnose.py` | 拆解綜合分數輸給同池等權的原因 |
 | `report.py`、`daily.py` | 個股報告、每日速覽，輸出到 `reports/` |
 | `analyst.py`、`evals/analyst/` | 分析師問答（命令列）與評測題組 |

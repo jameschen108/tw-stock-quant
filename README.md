@@ -23,10 +23,17 @@
 - 穩健性檢查：參數微調（每個策略 9–12 個變體）、分段績效、相對 0050 的超額報酬與 t 值。
 - 每次回測都寫入嘗試紀錄（`data/strategy/trials.jsonl`），誠實記下試過幾個設定。
 - `diagnose.py` 拆解綜合分數 Top-N 輸給同池等權的原因：產業配置、市值、哪一組因子拖累。
+- `event_study.py` 事件研究：月營收公告後 5／20／60 個交易日，相對同期流動股票池的超額報酬（扣成本、以月份分群算 t 值），另看外資買賣超條件。目前最強的是「單月營收創歷史新高且年增 ≥30%」，60 日平均超額約 5%，但勝率不到一半，也還沒做市值與波動中性化。
 
 **模擬持股**
 - 每月記下綜合分數前 30 名（20 日均成交值 2,000 萬以上），訊號日隔天收盤進場、等權、扣成本，之後追蹤實際報酬，累積真正的樣本外紀錄。
 - 另可在 `paper_strategies.txt` 列多個策略，各自追蹤目標曝險、持股與大盤濾網狀態。
+
+**LLM 決策模擬（虛擬資金）**
+- `llm_trader.py`：量化規則給候選（營收創新高且年增 ≥30%、20 日均成交值 5,000 萬以上），Claude 讀個股事實表後決定買／不買／等待，附信心、理由與風險；等待的股票之後重評，第一次決策後超過 20 個交易日就放棄。
+- 同時跑三組模擬持股，持有 60 個交易日、等權，和 0050 比較：LLM 篩選、量化全買（不經 LLM）、隨機對照（每批隨機挑和 LLM 一樣多檔）。只有 LLM 組穩定贏過另外兩組，才代表 LLM 有加分。
+- 決策寫進 `data/paper/llm_decisions.jsonl`，只追加不改，含模型、prompt 雜湊、token 數與費用。
+- 模型知識截止在 2026-06，更早的日期可能記得後來的股價，所以只能從現在往後累積證據；`try --asof` 只用來除錯。
 
 **每日速覽與個股報告**
 - 觀察名單（`watchlist.txt`）每日比對上次結果，超過門檻就提醒：單日漲跌超過 7%、綜合分數變動 15 分以上、外資持股 5 日變動 1 點以上、融資 5 日變動 15% 以上、看漲看跌標籤改變。同時列出新公布的月營收、季財報與重大訊息。
@@ -125,6 +132,8 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `mine.py` | 自選股即時模擬：自己挑股票，從最新資料日起往後記錄並追蹤（可月調） |
 | `custom.py` | 自選股模擬：自己挑股票、權重和起訖日回頭重播，對比 0050 |
 | `diagnose.py` | 拆解綜合分數輸給同池等權的原因 |
+| `event_study.py` | 月營收與外資事件研究，輸出 `data/event_study.csv` |
+| `llm_trader.py` | LLM 決策模擬：`candidates` 列候選、`run --dry-run` 估費用、`run` 決策並更新三組持股、`status` 看績效 |
 | `report.py`、`daily.py` | 個股報告、每日速覽，輸出到 `reports/` |
 | `analyst.py`、`evals/analyst/` | 分析師問答（命令列）與評測題組 |
 | `update.py` | 每日更新的總流程 |
@@ -133,13 +142,13 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 ## 分析師問答與費用
 
-`analyst.py`、`report.py` 與前端的問答頁會呼叫 Anthropic API，**會產生費用**。在專案根目錄建立 `.env`：
+`analyst.py`、`report.py`、`llm_trader.py` 與前端的問答頁會呼叫 Anthropic API，**會產生費用**。在專案根目錄建立 `.env`：
 
 ```
 ANTHROPIC_API_KEY=你的key
 ```
 
-個股報告預設用較便宜的模型，問答預設用 Sonnet，可用 `--model haiku` 改。`.env` 已在 `.gitignore`，不會被提交。
+個股報告預設用較便宜的模型，問答預設用 Sonnet，可用 `--model haiku` 改。`llm_trader.py` 預設用 Haiku，每檔約 1 萬輸入 token，120 檔約 US$0.25；先用 `run --dry-run` 看估價。`.env` 已在 `.gitignore`，不會被提交。
 
 ## 使用限制
 

@@ -1,4 +1,5 @@
 """模擬持股：綜合分數前 30、多策略摘要、紀錄、淨值（淨值序列等後端）。"""
+import json
 import sys
 from pathlib import Path
 
@@ -179,6 +180,225 @@ def _nav_chart(daily: pd.DataFrame, labels: list[tuple[str, str]], title: str, h
     common.chart(common.line_fig(nav.index, named, title, {k: _NAV_COLOR[k] for k in named}, height))
 
 
+_LLM_ROLES = ("LLM篩選", "量化全買", "隨機對照")
+_LLM_LABEL = {"LLM篩選": "LLM 篩選", "量化全買": "量化全買", "隨機對照": "隨機對照"}
+_LLM_COLOR = {"LLM 篩選": "#3b82f6", "量化全買": "#64748b", "隨機對照": "#a78bfa", paper.ETF: common.C_ETF}
+_DEC_LABEL = {"buy": "買", "skip": "不買", "wait": "等待"}
+
+
+def _is_llm_book(name: str) -> bool:
+    return name == "量化全買" or name.startswith("LLM篩選-") or name.startswith("隨機對照-")
+
+
+def _llm_groups(meta: dict) -> dict[str, dict[str, str]]:
+    """{模型簡稱: {角色: 組合名稱}}。量化全買不分模型，每一組比較都帶上。"""
+    groups: dict[str, dict[str, str]] = {}
+    for name in meta:
+        if name.startswith("LLM篩選-") or name.startswith("隨機對照-"):
+            role, short = name.split("-", 1)
+            groups.setdefault(short, {})[role] = name
+    if "量化全買" in meta:
+        if not groups:
+            groups["量化"] = {"量化全買": "量化全買"}
+        else:
+            for g in groups.values():
+                g["量化全買"] = "量化全買"
+    return groups
+
+
+def _model_short(model: str) -> str:
+    parts = str(model).split("-")
+    return parts[1] if len(parts) >= 2 else str(model)
+
+
+def _book_sig() -> str:
+    parts = [common.data_sig()]
+    for p in (mine.LEDGER, mine.META, mine.PAPER / "llm_decisions.jsonl"):
+        parts.append(str(p.stat().st_mtime_ns) if p.exists() else "0")
+    return "|".join(parts)
+
+
+@st.cache_data(show_spinner=False, max_entries=12)
+def _cached_replay(name: str, sig: str):
+    return mine.replay(name)
+
+
+def _load_decisions() -> pd.DataFrame:
+    path = mine.PAPER / "llm_decisions.jsonl"
+    if not path.exists():
+        return pd.DataFrame()
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return pd.DataFrame(rows) if rows else pd.DataFrame()
+
+
+def _book_weights(name: str) -> pd.Series:
+    sigs = mine._latest_signals(mine.load_ledger(), name)
+    if not sigs:
+        return pd.Series(dtype=float)
+    w = sigs[max(sigs)]
+    return w[w > 0]
+
+
+def _nav_of(ret: pd.Series) -> pd.Series:
+    r = ret.dropna()
+    return (1 + r).cumprod() if len(r) else r
+
+
+def _text(v) -> str:
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return ""
+    return str(v)
+
+
+def _lines(v) -> list:
+    return list(v) if isinstance(v, (list, tuple)) else []
+
+
+def _llm_compare(group: dict[str, str], sig: str) -> None:
+    st.markdown("**三組對照**")
+    ordered = [(role, group[role]) for role in _LLM_ROLES if role in group]
+    if not ordered:
+        common.empty("這三組模擬持股還沒建立。決策跑完、不加 --limit 時，llm_trader.py 會自己寫進帳本。")
+        return
+    results: dict[str, dict | None] = {}
+    with st.spinner("重算三組淨值…"):
+        for role, name in ordered:
+            results[role] = _cached_replay(name, sig)
+    filled = [(role, results[role]) for role, _ in ordered if results[role] is not None]
+    waiting = [_LLM_LABEL[role] for role, res in results.items() if res is None]
+    if not filled:
+        common.empty("訊號已記下，等下一個交易日收盤進場後才有淨值。三組會和 0050 畫在同一張圖。")
+    else:
+        ref_role = next((r for r, _ in filled if r == "LLM篩選"), filled[0][0])
+        ref = results[ref_role]
+        navs = {_LLM_LABEL[role]: _nav_of(res["daily"]["strategy"]) for role, res in filled}
+        navs[paper.ETF] = _nav_of(ref["daily"]["etf"])
+        idx = None
+        for s in navs.values():
+            idx = s.index if idx is None else idx.union(s.index)
+        idx = idx.sort_values()
+        aligned = {k: v.reindex(idx) for k, v in navs.items()}
+        common.chart(common.line_fig(idx, aligned, "累積淨值（起點 = 1）", _LLM_COLOR, 380))
+        rows = []
+        for role, res in filled:
+            p = res["perf"].get("strategy") or {}
+            rows.append({"組合": _LLM_LABEL[role], "總報酬": (1 + res["daily"]["strategy"]).prod() - 1,
+                         "年化": p.get("cagr"), "波動": p.get("vol"), "Sharpe": p.get("sharpe"),
+                         "最大回落": p.get("mdd"), "持股": int((_book_weights(group[role]) > 0).sum())})
+        ep = ref["perf"].get("etf") or {}
+        rows.append({"組合": paper.ETF, "總報酬": (1 + ref["daily"]["etf"]).prod() - 1,
+                     "年化": ep.get("cagr"), "波動": ep.get("vol"), "Sharpe": ep.get("sharpe"),
+                     "最大回落": ep.get("mdd"), "持股": pd.NA})
+        st.dataframe(common.styled(pd.DataFrame(rows), fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
+                                                            "Sharpe": "{:.2f}", "最大回落": "{:.1%}", "持股": "{:.0f}"},
+                                   signed=["總報酬", "年化"]), hide_index=True)
+        note = f"0050 跟「{_LLM_LABEL[ref_role]}」同一段期間。不到 20 個交易日不計算年化、波動和 Sharpe。"
+        if waiting:
+            note += "還沒進場：" + "、".join(waiting) + "。"
+        st.caption(note)
+    held = {role: _book_weights(name) for role, name in ordered}
+    codes = sorted({c for w in held.values() for c in w.index})
+    if not codes:
+        return
+    names = custom.names_of(codes)
+    show = pd.DataFrame({"代號": codes, "名稱": [names.get(c, "") for c in codes]})
+    for role, w in held.items():
+        show[_LLM_LABEL[role]] = [w.get(c, float("nan")) for c in codes]
+    st.markdown("**目前目標權重**")
+    ev = st.dataframe(common.styled(show, fmt={_LLM_LABEL[r]: "{:.1%}" for r, _ in ordered}), hide_index=True,
+                      height=320, on_select="rerun", selection_mode="single-row",
+                      key=f"llm_holds_{'|'.join(group.values())}")
+    st.caption("有數字的是這組目前持有、等權。點一列打開個股頁。")
+    sel = ev.selection.rows if ev and ev.selection else []
+    if sel:
+        code = str(show.iloc[sel[0]]["代號"])
+        if st.session_state.get("llm_hold_nav") != code:
+            st.session_state["llm_hold_nav"] = code
+            common.goto_stock(code)
+
+
+def _llm_decisions(dec: pd.DataFrame, short: str) -> None:
+    st.markdown("**決策紀錄**")
+    if dec.empty or "model" not in dec.columns:
+        common.empty("還沒有決策紀錄。")
+        return
+    view = dec[dec["model"].map(_model_short) == short].copy()
+    if view.empty:
+        common.empty(f"{short} 還沒有決策。")
+        return
+    view["決策"] = view["decision"].map(_DEC_LABEL).fillna(view["decision"])
+    n = len(view)
+    counts = view["決策"].value_counts()
+    cost = pd.to_numeric(view["cost_usd"], errors="coerce").sum() if "cost_usd" in view else float("nan")
+    common.kpis([
+        ("決策", f"{n}", short),
+        ("買", f"{int(counts.get('買', 0))}", ""),
+        ("不買", f"{int(counts.get('不買', 0))}", ""),
+        ("等待", f"{int(counts.get('等待', 0))}", ""),
+        ("費用", f"US${cost:.2f}" if pd.notna(cost) else "—", "累計"),
+    ])
+    pick = st.segmented_control("決策篩選", ["全部", "買", "不買", "等待"], default="全部",
+                                key=f"llm_dec_filter_{short}", label_visibility="collapsed") or "全部"
+    if pick != "全部":
+        view = view[view["決策"] == pick]
+    view = view.sort_values("time", ascending=False).reset_index(drop=True)
+    if view.empty:
+        common.empty(f"沒有「{pick}」。")
+        return
+    show = pd.DataFrame({
+        "資料日": view["asof"],
+        "代號": view["code"],
+        "名稱": view["name"],
+        "營收月": view["period"],
+        "年增": pd.to_numeric(view["yoy"], errors="coerce") / 100,
+        "決策": view["決策"],
+        "信心": pd.to_numeric(view["conviction"], errors="coerce"),
+        "摘要": view["summary"].fillna("").map(lambda s: s if len(str(s)) <= 72 else str(s)[:72] + "…"),
+    })
+    ev = st.dataframe(common.styled(show, fmt={"年增": "{:.1%}", "信心": "{:.0f}"}), hide_index=True, height=420,
+                      on_select="rerun", selection_mode="single-row", key=f"llm_dec_{short}_{pick}")
+    st.caption("點一列看理由與風險。紀錄只追加，不在這裡重跑。")
+    sel = ev.selection.rows if ev and ev.selection else []
+    if not sel:
+        return
+    row = view.iloc[sel[0]]
+    with st.container(border=True):
+        st.markdown(f"<b>{common.esc(row['code'])} {common.esc(row['name'])}</b>　{common.esc(row['決策'])}"
+                    f"　信心 {common.esc(row['conviction'])}　{common.esc(row['period'])} 營收",
+                    unsafe_allow_html=True)
+        st.markdown(f"<p>{common.esc(_text(row.get('summary')))}</p>", unsafe_allow_html=True)
+        left, right = st.columns(2)
+        for col, title, key in ((left, "理由", "reasons"), (right, "風險", "risks")):
+            body = "".join(f"<li>{common.esc(x)}</li>" for x in _lines(row.get(key))) or "<li>—</li>"
+            col.markdown(f"<b>{title}</b><ul>{body}</ul>", unsafe_allow_html=True)
+        if row["決策"] == "等待" and _text(row.get("wait_for")):
+            st.caption("要等：" + _text(row.get("wait_for")))
+        if st.button(f"打開 {row['code']} {row['name']}", icon=":material/arrow_forward:", key="llm_goto"):
+            common.goto_stock(str(row["code"]))
+
+
+def _llm() -> None:
+    st.caption("量化規則先挑候選（月營收創高且年增 30% 以上），LLM 再決定買、不買或等待。"
+               "三組都是等權、持有約 60 個交易日、扣成本。只有 LLM 組穩定贏過量化全買和隨機對照，才代表有加分。"
+               "由 llm_trader.py 寫入，這裡不能改。")
+    meta = {k: v for k, v in mine.load_meta().items() if not v.get("archived")}
+    groups = _llm_groups(meta)
+    dec = _load_decisions()
+    shorts = list(groups)
+    if not dec.empty and "model" in dec.columns:
+        for s in dec["model"].map(_model_short):
+            if s not in shorts:
+                shorts.append(s)
+    if not shorts:
+        common.empty("還沒有 LLM 決策。命令列先看候選，再用 run --dry-run 估價。")
+        return
+    short = shorts[0]
+    if len(shorts) > 1:
+        short = st.segmented_control("模型", shorts, default=short, key="llm_model") or short
+    _llm_compare(groups.get(short, {}), _book_sig())
+    _llm_decisions(dec, short)
+
+
 def _cost_line(res: dict) -> str:
     t = res["trades"]
     blocked = [f"{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}" for _, r in t.iterrows() if r["blocked"]]
@@ -247,18 +467,22 @@ def _mine() -> None:
         cap = c3.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="mn_cap")
         monthly = st.checkbox("每月調回目標權重", key="mn_monthly")
         if st.button("建立", icon=":material/add:", key="mn_create"):
-            try:
-                sig = mine.create(name.strip(), custom.parse_codes(spec), monthly, float(cap))
-                st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
-                st.rerun()
-            except ValueError as e:
-                st.warning(str(e))
-            except Exception as e:
-                st.error("建立失敗：" + common.scrub(e))
+            if _is_llm_book(name.strip()):
+                st.warning("這個名稱是 LLM 實驗用的，請換一個。")
+            else:
+                try:
+                    sig = mine.create(name.strip(), custom.parse_codes(spec), monthly, float(cap))
+                    st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
+                    st.rerun()
+                except ValueError as e:
+                    st.warning(str(e))
+                except Exception as e:
+                    st.error("建立失敗：" + common.scrub(e))
     if not meta:
         common.empty("還沒有自選組合。")
         return
-    name = st.selectbox("組合", list(meta), key="mn_pick")
+    names = [k for k in meta if not _is_llm_book(k)] + [k for k in meta if _is_llm_book(k)]
+    name = st.selectbox("組合", names, key="mn_pick")
     m = meta[name]
     sigs = mine._latest_signals(mine.load_ledger(), name)
     cur = sigs[max(sigs)]
@@ -291,6 +515,13 @@ def _mine() -> None:
             rows = [{"訊號日": f"{s:%Y-%m-%d}", "代號": c, "目標權重": float(w)}
                     for s, weights in sigs.items() for c, w in weights.items()]
             st.dataframe(common.styled(pd.DataFrame(rows), fmt={"目標權重": "{:.1%}"}), hide_index=True)
+    if _is_llm_book(name):
+        st.caption("這組由 llm_trader.py 管理，不能改持股，也不能封存。三組比較和每檔理由在「LLM 決策」。")
+    else:
+        _mine_edit(name, cur)
+
+
+def _mine_edit(name: str, cur: pd.Series) -> None:
     with st.expander("改持股 / 封存"):
         spec = st.text_input("新的持股（代號:權重）", ",".join(f"{c}:{w * 100:.4g}" for c, w in cur.items()),
                              key=f"mn_edit_{name}")
@@ -319,8 +550,9 @@ summary = common.cached_paper_summary(sig)
 strats = paper.load_strategy_summaries()
 common.page_title("模擬持股", f"即時紀錄，起點之前沒有資料・多策略 {len(strats)} 個")
 
-section = st.segmented_control("區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股回測", "自選組合", "追蹤設定"],
-                               default="綜合分數前 30", key="paper_section", label_visibility="collapsed")
+section = st.segmented_control(
+    "區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股回測", "自選組合", "LLM 決策", "追蹤設定"],
+    default="綜合分數前 30", key="paper_section", label_visibility="collapsed")
 section = section or "綜合分數前 30"
 if section == "綜合分數前 30":
     _top30(summary)
@@ -334,6 +566,8 @@ elif section == "自選股回測":
     _custom()
 elif section == "自選組合":
     _mine()
+elif section == "LLM 決策":
+    _llm()
 elif section == "追蹤設定":
     st.caption("paper_strategies.txt。這裡只顯示；改了要等下個月才會記新策略。")
     if paper.STRATS_FILE.exists():

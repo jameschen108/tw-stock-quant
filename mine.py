@@ -80,12 +80,15 @@ def _check_codes(w: pd.Series, sig: pd.Timestamp) -> None:
         raise ValueError("最新資料日沒有行情：" + "、".join(bad))
 
 
-def create(name: str, w: pd.Series, monthly: bool = False, capital: float = 1_000_000) -> pd.Timestamp:
+def create(name: str, w: pd.Series, monthly: bool = False, capital: float = 1_000_000,
+           signal_date: pd.Timestamp | None = None) -> pd.Timestamp:
+    """signal_date：另外指定訊號日（例如決策當天，晚於最新資料日），成交日 = 它之後的第一個交易日。"""
     meta = load_meta()
     if not name.strip() or name in meta:
         raise ValueError("組合名稱不能空白，也不能和既有的重複（含已封存的）")
     sig = _fresh_signal_date()
     _check_codes(w, sig)
+    sig = signal_date if signal_date is not None else sig
     _append(name, w, sig)
     meta[name] = {"capital": float(capital), "rebalance": "monthly" if monthly else "none",
                   "created": str(sig.date()), "archived": False}
@@ -93,12 +96,13 @@ def create(name: str, w: pd.Series, monthly: bool = False, capital: float = 1_00
     return sig
 
 
-def edit(name: str, w: pd.Series) -> pd.Timestamp:
+def edit(name: str, w: pd.Series, signal_date: pd.Timestamp | None = None) -> pd.Timestamp:
     m = load_meta().get(name)
     if not m or m["archived"]:
         raise ValueError("找不到這個組合，或已封存")
     sig = _fresh_signal_date()
     _check_codes(w, sig)
+    sig = signal_date if signal_date is not None else sig
     _append(name, w, sig)
     return sig
 

@@ -16,7 +16,8 @@
     event_study.py：這類事件公告後 60 個交易日平均超額約 5%，但勝率不到一半，報酬靠少數大贏家。
   - LLM 只拿到 analyst.stock_facts 的事實表（資料時點 = 最新資料日），輸出 buy / skip / wait 與理由。
     wait 的股票之後每次 run 重評，第一次決策後超過 WAIT_DAYS 個交易日就放棄。
-  - 三組模擬持股（mine.py 的帳本，隔一個交易日收盤成交、成本與漲跌停規則同回測），持有 HOLD_DAYS 個交易日、等權：
+  - 訊號日 = 決策當天（不是資料日），成交在決策之後的第一個交易日收盤，不回填到決策前。
+  - 三組模擬持股（mine.py 的帳本，成本與漲跌停規則同回測），持有 HOLD_DAYS 個交易日、等權：
       LLM篩選-<model>  LLM 說 buy 的
       量化全買          所有候選（不經 LLM）
       隨機對照-<model>  每批候選隨機挑和 LLM 一樣多檔，排除「只是持股比較少」的效果
@@ -185,10 +186,15 @@ def holdings(entries: dict[str, pd.Timestamp], asof: pd.Timestamp) -> list[str]:
     return sorted(c for c, s in entries.items() if ((days > s) & (days <= asof)).sum() < HOLD_DAYS)
 
 
+def signal_dates(dec: pd.DataFrame) -> pd.Series:
+    """訊號日 = 決策當天的日期（不是資料日）：成交在決策之後的第一個交易日，不回填到決策前。"""
+    return pd.to_datetime(dec["time"]).dt.normalize()
+
+
 def entries_from(dec: pd.DataFrame, picked: pd.Series) -> dict[str, pd.Timestamp]:
     """每檔最後一次被買進的訊號日。"""
     d = dec[picked]
-    return {c: pd.Timestamp(a) for c, a in d.groupby("code")["asof"].max().items()}
+    return signal_dates(d).groupby(d["code"]).max().to_dict()
 
 
 def random_picks(dec: pd.DataFrame, model: str) -> pd.Series:
@@ -202,16 +208,18 @@ def random_picks(dec: pd.DataFrame, model: str) -> pd.Series:
     return picked
 
 
-def sync_portfolios(model: str, asof: pd.Timestamp, short: str) -> list[str]:
+def sync_portfolios(model: str, asof: pd.Timestamp, short: str, today: pd.Timestamp | None = None) -> list[str]:
+    """today：這次調整的訊號日，預設今天（決策剛做完）。"""
     dec = load_decisions()
     dec = dec[dec["model"] == model].reset_index(drop=True)
     # 量化全買不分模型：同一檔同一營收月份只算第一次出現
     first = dec.drop_duplicates(["code", "period"])
     groups = {
         f"LLM篩選-{short}": entries_from(dec, dec["decision"] == "buy"),
-        QUANT: {c: pd.Timestamp(a) for c, a in first.groupby("code")["asof"].max().items()},
+        QUANT: entries_from(first, pd.Series(True, index=first.index)),
         f"隨機對照-{short}": entries_from(dec, random_picks(dec, model)),
     }
+    today = today if today is not None else pd.Timestamp(datetime.now().date())
     meta, msgs = M.load_meta(), []
     led = M.load_ledger()
     for name, ent in groups.items():
@@ -221,7 +229,7 @@ def sync_portfolios(model: str, asof: pd.Timestamp, short: str) -> list[str]:
             if not hold:
                 msgs.append(f"[{name}] 還沒有持股，先不建立")
                 continue
-            M.create(name, w)
+            M.create(name, w, signal_date=today)
             msgs.append(f"[{name}] 建立，{len(hold)} 檔")
             continue
         cur = M._latest_signals(led, name)
@@ -229,7 +237,7 @@ def sync_portfolios(model: str, asof: pd.Timestamp, short: str) -> list[str]:
         if set(prev[prev > 0].index) == set(hold):
             msgs.append(f"[{name}] 持股不變（{len(hold)} 檔）")
             continue
-        M.edit(name, w if hold else pd.Series({"0050": 0.0}))
+        M.edit(name, w if hold else pd.Series({"0050": 0.0}), signal_date=today)
         msgs.append(f"[{name}] 更新為 {len(hold)} 檔" + ("（空手）" if not hold else ""))
     return msgs
 

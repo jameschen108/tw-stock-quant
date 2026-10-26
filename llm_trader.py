@@ -22,6 +22,7 @@
       量化全買          所有候選（不經 LLM）
       隨機對照-<model>  每批候選隨機挑和 LLM 一樣多檔，排除「只是持股比較少」的效果
     0050 是 mine.py 內建的基準。只有 LLM 組穩定贏量化全買與隨機對照，才代表 LLM 有加分。
+  - status 另做選股檢定：LLM buy 的平均報酬（不扣成本、等權），對照每批隨機挑同樣檔數重複 N_RANDOM 次的分布。
   - 決策紀錄 data/paper/llm_decisions.jsonl 只追加，含模型、prompt 雜湊、輸入 token 與費用；
     模型看到的使用者訊息原文存在 data/paper/llm_inputs/（gz），紀錄裡有路徑與 sha256。
     第一批（2026-10-22 資料）的輸入是事後用同一份未更新的資料重建的，紀錄標 input_backfilled。
@@ -43,6 +44,7 @@ import pandas as pd
 import analyst as A
 import mine as M
 from build_panel import OUT
+from custom import load_rets
 from report import load_dotenv
 
 CAND_DAYS = 35      # 公告日在最近幾個日曆天內才算新候選
@@ -51,6 +53,7 @@ HOLD_DAYS = 60      # 買進後持有幾個交易日
 MIN_VALUE = 5e7
 DECISIONS = OUT / "paper" / "llm_decisions.jsonl"
 INPUTS = OUT / "paper" / "llm_inputs"
+N_RANDOM = 1000     # 選股檢定的隨機抽樣次數
 PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00)}   # 每百萬 token（輸入, 輸出）
 QUANT = "量化全買"
 
@@ -226,6 +229,43 @@ def random_picks(dec: pd.DataFrame, model: str) -> pd.Series:
     return picked
 
 
+def event_returns(dec: pd.DataFrame) -> pd.DataFrame:
+    """每筆最終決策（buy / skip）的個股報酬：決策後第一個交易日收盤進場，持有 HOLD_DAYS 個交易日或到最新資料日。
+    不扣成本、等權，只用來比選股；含成本的比較看三組模擬持股。"""
+    final = dec[dec["decision"] != "wait"].copy()
+    final["signal"] = signal_dates(final)
+    rets = load_rets(final["signal"].min())
+    days = rets.index
+    out = []
+    for i, r in final.iterrows():
+        after = days[days > r["signal"]]
+        if not len(after) or r["code"] not in rets:
+            continue
+        win = rets.loc[(days > after[0]) & (days <= after[min(HOLD_DAYS, len(after) - 1)]), r["code"]]
+        out.append({"i": i, "ret": float((1 + win.fillna(0)).prod() - 1), "held": len(win)})
+    return final.join(pd.DataFrame(out).set_index("i"), how="inner") if out else final.iloc[0:0]
+
+
+def selection_test(dec: pd.DataFrame, model: str) -> dict | None:
+    """LLM buy 的平均報酬，對照「每批隨機挑同樣檔數」重複 N_RANDOM 次的分布（同批次同進場日，曝險時點相同）。"""
+    ev = event_returns(dec)
+    ev = ev[ev["held"] > 0]
+    if not len(ev) or not (ev["decision"] == "buy").any():
+        return None
+    batches = [(g["ret"].to_numpy(), int((g["decision"] == "buy").sum())) for _, g in ev.groupby("asof")]
+    rng = random.Random(f"{model}|test")
+    draws = []
+    for _ in range(N_RANDOM):
+        picked = [x for r, n in batches for x in rng.sample(list(r), n)]
+        draws.append(sum(picked) / len(picked))
+    draws = pd.Series(draws)
+    llm = ev.loc[ev["decision"] == "buy", "ret"].mean()
+    return {"n_buy": int((ev["decision"] == "buy").sum()), "n_all": len(ev), "held_days": int(ev["held"].median()),
+            "llm": llm, "skip": ev.loc[ev["decision"] == "skip", "ret"].mean(), "quant": ev["ret"].mean(),
+            "rand_p5": draws.quantile(0.05), "rand_p50": draws.median(), "rand_p95": draws.quantile(0.95),
+            "pctile": float((draws < llm).mean()), "p_one_sided": float((draws >= llm).mean())}
+
+
 def sync_portfolios(model: str, asof: pd.Timestamp, short: str, today: pd.Timestamp | None = None) -> list[str]:
     """today：這次調整的訊號日，預設今天（決策剛做完）。"""
     dec = load_decisions()
@@ -325,6 +365,14 @@ def cmd_status(model, short):
         b = res["daily"]
         tot = lambda k: (1 + b[k]).prod() - 1
         print(f"[{name}] 自 {meta[name]['created']} 起累積 {tot('strategy'):+.2%}（0050 {tot('etf'):+.2%}），資產 {res['nav'].iloc[-1]:,.0f}")
+    t = selection_test(d, model)
+    if t is None:
+        print("選股檢定：還沒有成交後的報酬")
+        return
+    print(f"選股檢定（不扣成本、等權，持有中位數 {t['held_days']} 個交易日；{t['n_buy']} / {t['n_all']} 檔 buy）：\n"
+          f"  LLM buy {t['llm']:+.2%}　LLM skip {t['skip']:+.2%}　全部候選 {t['quant']:+.2%}\n"
+          f"  隨機挑同樣檔數 {N_RANDOM} 次：中位數 {t['rand_p50']:+.2%}，90% 區間 {t['rand_p5']:+.2%} ~ {t['rand_p95']:+.2%}\n"
+          f"  LLM 在隨機分布的第 {t['pctile'] * 100:.0f} 百分位（單尾 p = {t['p_one_sided']:.3f}）")
 
 
 def main():

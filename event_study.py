@@ -14,6 +14,10 @@
   - t 值：先對每個進場日取事件平均，再對「進場日」做 t（事件集中在每月 10 日前後，直接對事件算 t 會高估）
   - 營收公布日被推估的年份（avail_imputed）不納入
   - 籌碼資料只有 2024-10 起，籌碼條件的樣本只落在這段
+  - 最後的「基準比較」表另外換三種基準，檢查超額是不是只來自小型股、高波動或產業：
+      市值×波動  同進場日、同市值五分位 × 60 日波動五分位的流動股等權平均（5×5 = 25 格）
+      產業        同進場日、同產業的流動股等權平均
+      0050        同期 0050 含息報酬
 """
 import argparse
 
@@ -43,10 +47,38 @@ def fwd_excess(adj, sus, liquid, h):
     return fwd, fwd.sub(bench, axis=0)
 
 
-def summarize(ev, label, tag):
+def daily_from_monthly(col, dates, codes):
+    """factors_monthly 的月底欄位攤到每個交易日（用最近一個已過的月底值）。"""
+    fm = pd.read_parquet("data/factors_monthly.parquet", columns=["date", "code", col])
+    m = fm.pivot(index="date", columns="code", values=col)
+    return m.reindex(m.index.union(dates)).ffill().reindex(index=dates, columns=codes)
+
+
+def characteristics(adj, liquid):
+    """每個 (交易日, 股票) 的市值×波動格子（11~55）與產業，只對流動股給值。"""
+    dates, codes = adj.index, adj.columns
+    mcap = daily_from_monthly("mcap", dates, codes).shift(1)   # 月底市值，下一個交易日起才用
+    vol = adj.pct_change(fill_method=None).rolling(60, min_periods=40).std()
+    ok = liquid & mcap.notna() & vol.notna()
+    q = lambda x: np.ceil(x.where(ok).rank(axis=1, pct=True) * 5)
+    bucket = q(mcap) * 10 + q(vol)
+    ind = daily_from_monthly("industry", dates, codes).where(liquid)
+    return bucket, ind
+
+
+def matched_excess(fwd, groups, liquid):
+    """個股報酬 − 同進場日、同組流動股的等權平均。"""
+    long = pd.DataFrame({"r": fwd.where(liquid).stack(), "g": groups.stack()}).dropna()
+    bench = long.groupby([long.index.get_level_values(0), "g"])["r"].transform("mean")
+    return (long["r"] - bench).rename_axis(["entry", "code"])
+
+
+def summarize(ev, label, tag, col="ex"):
     rows = []
     for h in HORIZONS:
-        x = ev.dropna(subset=[f"ex{h}"])
+        x = ev.dropna(subset=[f"{col}{h}"])
+        if col != "ex":
+            x = x.drop(columns=f"ex{h}").rename(columns={f"{col}{h}": f"ex{h}"})
         if len(x) < 30:
             rows.append(dict(事件=label, 區間=tag, 持有=h, 事件數=len(x)))
             continue
@@ -77,12 +109,21 @@ def main():
     rev = rev[pos < len(dates)].copy()
     rev["entry"] = dates[pos[pos < len(dates)]]
 
+    bucket, ind = characteristics(adj, liquid)
     for h in HORIZONS:
-        _, ex = fwd_excess(adj, sus, liquid, h)
+        fwd, ex = fwd_excess(adj, sus, liquid, h)
         s = ex.stack()
         s.index.names = ["entry", "code"]
         rev = rev.join(s.rename(f"ex{h}"), on=["entry", "code"])
+        rev = rev.join(matched_excess(fwd, bucket, liquid).rename(f"sv{h}"), on=["entry", "code"])
+        rev = rev.join(matched_excess(fwd, ind, liquid).rename(f"ind{h}"), on=["entry", "code"])
+        etf = fwd.sub(fwd["0050"], axis=0).stack()
+        etf.index.names = ["entry", "code"]
+        rev = rev.join(etf.rename(f"etf{h}"), on=["entry", "code"])
     rev = rev[liquid.stack().reindex(pd.MultiIndex.from_frame(rev[["entry", "code"]])).fillna(False).values]
+    b = bucket.stack()
+    b.index.names = ["entry", "code"]
+    rev = rev.join(b.rename("bucket"), on=["entry", "code"])
 
     rev["is_high"] = rev.vs_high >= 0  # 欄位是相對「前」歷史高點的差距%，>=0 即創新高
     events = {
@@ -135,14 +176,42 @@ def main():
 
     out = pd.DataFrame(rows)
     pd.set_option("display.width", 200, "display.max_rows", 500)
-    fmt = out.copy()
-    for c in ["平均超額", "中位超額", "扣成本", "勝率"]:
-        if c in fmt:
-            fmt[c] = (fmt[c] * 100).round(2)
-    fmt["t"] = fmt["t"].round(2)
-    print("超額報酬單位 %，相對同期流動股票池等權平均\n")
-    print(fmt.to_string(index=False))
+
+    def show(df, title):
+        fmt = df.copy()
+        for c in ["平均超額", "中位超額", "扣成本", "勝率"]:
+            if c in fmt:
+                fmt[c] = (fmt[c] * 100).round(2)
+        fmt["t"] = fmt["t"].round(2)
+        print(f"{title}\n")
+        print(fmt.to_string(index=False))
+        print()
+
+    show(out, "超額報酬單位 %，相對同期流動股票池等權平均")
     out.to_csv("data/event_study.csv", index=False)
+
+    # 基準比較
+    benches = {"ex": "流動股池", "sv": "市值×波動", "ind": "產業", "etf": "0050"}
+    rows = []
+    for name in ("全部流動股公告", "創新高 且 年增>=30%", "年增>=30% 但未創新高"):
+        for tag, (lo, hi) in periods.items():
+            sel = rev[events[name] & (rev.entry >= lo) & (rev.entry < hi)]
+            for col, bn in benches.items():
+                rows += [{**r, "基準": bn} for r in summarize(sel, name, tag, col)]
+    cmp_ = pd.DataFrame(rows)
+    cmp_ = cmp_[["事件", "區間", "持有", "基準", "事件數", "平均超額", "中位超額", "扣成本", "勝率", "t"]]
+    show(cmp_, "基準比較（超額單位 %）")
+    cmp_.to_csv("data/event_study_bench.csv", index=False)
+
+    # 事件股落在哪些市值×波動格子（1 = 最小 / 最低）
+    hi = rev[events["創新高 且 年增>=30%"]].dropna(subset=["bucket"])
+    allq = rev.dropna(subset=["bucket"])
+    print("創新高且年增>=30% 的市值五分位分布 vs 全部公告：")
+    print(pd.DataFrame({"事件": (hi.bucket // 10).value_counts(normalize=True).sort_index().round(3),
+                        "全部": (allq.bucket // 10).value_counts(normalize=True).sort_index().round(3)}).to_string())
+    print("60 日波動五分位分布：")
+    print(pd.DataFrame({"事件": (hi.bucket % 10).value_counts(normalize=True).sort_index().round(3),
+                        "全部": (allq.bucket % 10).value_counts(normalize=True).sort_index().round(3)}).to_string())
 
 
 if __name__ == "__main__":

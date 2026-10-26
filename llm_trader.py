@@ -22,13 +22,16 @@
       量化全買          所有候選（不經 LLM）
       隨機對照-<model>  每批候選隨機挑和 LLM 一樣多檔，排除「只是持股比較少」的效果
     0050 是 mine.py 內建的基準。只有 LLM 組穩定贏量化全買與隨機對照，才代表 LLM 有加分。
-  - 決策紀錄 data/paper/llm_decisions.jsonl 只追加，含模型、prompt 雜湊、輸入 token 與費用。
+  - 決策紀錄 data/paper/llm_decisions.jsonl 只追加，含模型、prompt 雜湊、輸入 token 與費用；
+    模型看到的使用者訊息原文存在 data/paper/llm_inputs/（gz），紀錄裡有路徑與 sha256。
+    第一批（2026-10-22 資料）的輸入是事後用同一份未更新的資料重建的，紀錄標 input_backfilled。
 
 注意:
   - 模型知識截止 2026-06，用更早的 --asof 測試時模型可能記得後來的股價，try 的結果不能當績效證據。
   - 全部是虛擬資金，不連任何券商。
 """
 import argparse
+import gzip
 import hashlib
 import json
 import random
@@ -47,6 +50,7 @@ WAIT_DAYS = 20      # wait 最多等幾個交易日（從第一次決策算）
 HOLD_DAYS = 60      # 買進後持有幾個交易日
 MIN_VALUE = 5e7
 DECISIONS = OUT / "paper" / "llm_decisions.jsonl"
+INPUTS = OUT / "paper" / "llm_inputs"
 PRICES = {"claude-haiku-5-5": (0.10, 0.50), "claude-sonnet-5-5": (2.00, 10.00)}   # 每百萬 token（輸入, 輸出）
 QUANT = "量化全買"
 
@@ -155,10 +159,11 @@ def decide(client, model: str, ev: pd.Series, asof: pd.Timestamp, prior: str | N
             f"單月年增 {ev['yoy']:.1f}%、比前歷史高點多 {ev['vs_high']:.1f}%。資料時點 {asof:%Y-%m-%d}。")
     if prior:
         head += f"\n你上次對這檔的決定是 wait，當時要等的是：{prior}。請依最新資料重新判斷。"
+    user = head + "\n\n事實表：\n" + facts
     resp = client.messages.create(
         model=model, max_tokens=4000, system=SYSTEM,
         output_config={"effort": "medium", "format": {"type": "json_schema", "schema": SCHEMA}},
-        messages=[{"role": "user", "content": head + "\n\n事實表：\n" + facts}],
+        messages=[{"role": "user", "content": user}],
     )
     u = resp.usage
     pin, pout = PRICES[model]
@@ -166,14 +171,27 @@ def decide(client, model: str, ev: pd.Series, asof: pd.Timestamp, prior: str | N
     if resp.stop_reason != "refusal":
         out = json.loads(next(b.text for b in resp.content if b.type == "text"))
     return {**out, "usage": {"input": u.input_tokens, "output": u.output_tokens},
-            "cost_usd": round((u.input_tokens * pin + u.output_tokens * pout) / 1e6, 5)}
+            "cost_usd": round((u.input_tokens * pin + u.output_tokens * pout) / 1e6, 5), "_input": user}
+
+
+def save_input(text: str, model: str, asof: pd.Timestamp, code: str, period: str, stamp: str) -> tuple[str, str]:
+    """模型看到的使用者訊息原文存成 gz（事實表會隨資料更新改變，之後無法重建）；回傳相對路徑與 sha256。"""
+    path = INPUTS / model / f"{asof:%Y-%m-%d}" / f"{code}_{period}_{stamp.replace(':', '')}.txt.gz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(gzip.compress(text.encode("utf-8")))
+    return str(path.relative_to(OUT)), hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
 def log_decision(ev: pd.Series, asof: pd.Timestamp, model: str, d: dict) -> None:
     DECISIONS.parent.mkdir(exist_ok=True)
-    rec = {"time": datetime.now().isoformat(timespec="seconds"), "asof": str(asof.date()), "model": model,
-           "prompt": PROMPT_HASH, "code": ev["code"], "name": ev["name"], "period": f"{ev['period']:%Y-%m}",
-           "avail_date": str(ev["avail_date"].date()), "yoy": round(float(ev["yoy"]), 2), **d}
+    now = datetime.now().isoformat(timespec="seconds")
+    period = f"{ev['period']:%Y-%m}"
+    d = dict(d)
+    path, sha = save_input(d.pop("_input"), model, asof, ev["code"], period, now)
+    rec = {"time": now, "asof": str(asof.date()), "model": model,
+           "prompt": PROMPT_HASH, "code": ev["code"], "name": ev["name"], "period": period,
+           "avail_date": str(ev["avail_date"].date()), "yoy": round(float(ev["yoy"]), 2),
+           "input_file": path, "input_sha256": sha, **d}
     with DECISIONS.open("a", encoding="utf-8") as f:
         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
@@ -338,6 +356,7 @@ def main():
                                                        "period": at, "avail_date": at, "yoy": float("nan"), "vs_high": float("nan")})
         load_dotenv()
         d = decide(anthropic.Anthropic(), model, row, at)
+        d.pop("_input")
         print(json.dumps(d, ensure_ascii=False, indent=1))
 
 

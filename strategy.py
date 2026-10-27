@@ -167,9 +167,18 @@ def target_weights(pick: pd.DataFrame, pos: dict, sort: str, asc: bool) -> pd.Se
     else:
         raw = pd.Series(1.0, index=pick.index)
     w = raw / raw.sum()
-    w = _cap(w, None, pos["max_weight"])
-    if pos["max_industry"] < 1:
-        w = _cap(w, pick["industry"].fillna("NA"), pos["max_industry"])
+    ind = pick["industry"].fillna("NA") if pos["max_industry"] < 1 else None
+    # 產業上限把多出的權重分給其他股票時，可能又讓個股超過單檔上限，所以兩個上限輪流套到都滿足為止
+    for _ in range(20):
+        w = _cap(w, None, pos["max_weight"])
+        if ind is None:
+            break
+        w = _cap(w, ind, pos["max_industry"])
+        if w.max() <= pos["max_weight"] + 1e-9:
+            break
+    w = w.clip(upper=pos["max_weight"])                  # 還是分不完（例如選到的產業太少）就變現金
+    if ind is not None:
+        w = w * (pos["max_industry"] / w.groupby(ind).transform("sum")).clip(upper=1.0)
     return (w * pos["exposure"]).set_axis(pick["code"].values)
 
 

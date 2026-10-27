@@ -95,12 +95,14 @@ uv run fetch_public.py
 資料放好後，在專案根目錄依序執行：
 
 ```bash
-uv run build_panel.py          # TEJ CSV → 月營收、季財報、月底面板
-uv run build_prices.py         # 行情 + 除權息事件 → 還原股價
-uv run fetch_chips.py --build  # 籌碼原始檔 → 三大法人、融資融券、外資持股表
-uv run factors.py              # 月頻因子表
-uv run composite.py            # 綜合分數與回測
+uv run build_prices.py             # 行情 + 除權息事件 → 還原股價（要最先跑）
+uv run fetch_chips.py --build      # 籌碼原始檔 → 三大法人、融資融券、外資持股表
+uv run fetch_mops.py --parse-only  # 重大訊息原始頁面 → announcements.parquet
+uv run fetch_cashflow.py --parse-only
+uv run update.py --skip-fetch      # 不抓新資料，依序重建：行情 → 面板 → 因子 → 綜合分數 → 標籤 → 模擬持股 → 每日速覽
 ```
+
+可選：`uv run moat.py` 與 `uv run stars.py` 產生護城河分級與星等的資料表。
 
 之後每天更新資料並重算全部結果：
 

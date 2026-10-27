@@ -68,6 +68,8 @@ TRIALS = OUT / "strategy" / "trials.jsonl"
 RESULTS = OUT / "strategy" / "results"
 REPORTS = ROOT / "reports"
 ETF = "0050"
+DELIST_RET = 0.0    # 下市當下的報酬假設；沒有下市原因（合併收購多半 ≈ 0、財務危機可能大虧），預設 0，敏感度見 README
+DELIST_GAP = 30     # 最後一筆行情早於資料最後一天幾個日曆天以上才算下市
 PERIODS = {"全期": ("2000-01-01", "2100-01-01"), "樣本內 2011–2018": ("2011-01-01", "2018-12-31"),
            "樣本外 2019–": ("2019-01-01", "2100-01-01"), "近期 2024–": ("2024-01-01", "2100-01-01")}
 DEFAULTS = {"start": "2011-01-01", "capital": 100_000,
@@ -117,9 +119,22 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
 
 def clean_returns(px: pd.DataFrame) -> pd.DataFrame:
-    """日報酬寬表：可疑報酬（超過漲跌幅又沒有事件，多半是缺事件資料）設為缺值（持有時視為 0）。"""
-    return px.assign(ret=px["ret"].where(~px["ret_suspect"].fillna(False).astype(bool))) \
+    """日報酬寬表：可疑報酬（超過漲跌幅又沒有事件，多半是缺事件資料）設為缺值（持有時視為 0）。
+    下市（最後一筆行情早於資料最後一天 DELIST_GAP 天以上）：最後一筆的隔一個交易日記一筆 DELIST_RET。"""
+    w = px.assign(ret=px["ret"].where(~px["ret_suspect"].fillna(False).astype(bool))) \
         .pivot(index="date", columns="code", values="ret").sort_index()
+    if DELIST_RET:
+        for code, d in delisted(px).items():
+            nxt = w.index[w.index > d]
+            if len(nxt):
+                w.at[nxt[0], code] = DELIST_RET
+    return w
+
+
+def delisted(px: pd.DataFrame) -> pd.Series:
+    """{代號: 最後一筆行情日}，只含已經不再交易的（停牌中、還會恢復的看不出來，最後一筆離資料尾端夠遠才算）。"""
+    last = px.groupby("code")["date"].max()
+    return last[last < px["date"].max() - pd.Timedelta(days=DELIST_GAP)]
 
 
 # ---------------------------------------------------------------- 倉位
@@ -311,6 +326,9 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
         ma = idx.rolling(risk["regime_ma"], min_periods=risk["regime_ma"]).mean()
         st["above"] = ~(idx < ma)                       # 均線還算不出來時視為多頭
     cash, hold = float(cfg["capital"]), {}              # hold: code -> 部位市值
+    last_px = prices.apply(pd.Series.last_valid_index)
+    gone = last_px[last_px < days[-1] - pd.Timedelta(days=DELIST_GAP)].to_dict()
+    delist_out = []
     nav, bench, trades, logs = [], [], [], []
     for k, s in enumerate(sigs):
         after = days[days > s]
@@ -330,6 +348,10 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             tw = base_tw * mult
             tw_full = base_tw * rinfo.get("m_vol", 1.0)  # 不含大盤濾網的目標，每日濾網站回均線時買回用
             pool_codes, pick_codes = pool["code"].tolist(), pick["code"].tolist()
+        # 已下市（成交日之前就沒有行情了）的部位按最後價值轉成現金，否則永遠賣不掉、也不會再投入
+        for code in [x for x in hold if x in gone and gone[x] < exe]:
+            cash += hold.pop(code)
+            delist_out.append(code)
         total = cash + sum(hold.values())
         if st["dd_out"]:                                 # 回落控制觸發後，換股時恢復並重設高點
             st["dd_out"], st["nav_peak"] = False, total
@@ -381,7 +403,8 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
         trades.append({"signal": s, "exe": exe, "total": total, "n_hold": len(hold), "n_target": len(tw),
                        "turnover": traded / total / 2,
                        "fees": fees, "tax": tax, "blocked": blocked, "cash_pct": cash / total,
-                       "exposure": float(tw.sum()), **rinfo})
+                       "exposure": float(tw.sum()), "delisted": delist_out, **rinfo})
+        delist_out = []
         # 持有到下一個成交日
         win = rets[(rets.index > exe) & (rets.index <= end)]
         if daily_mode:

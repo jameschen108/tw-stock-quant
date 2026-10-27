@@ -90,6 +90,8 @@ def load_config(path: Path) -> dict:
     cfg["name"] = raw.get("name", path.stem)
     cfg["description"] = raw.get("description", "")
     cfg["id"] = path.stem
+    if "lag" in raw:                                     # 不在 DEFAULTS 裡（沒寫就是 1，舊設定的雜湊不變），要另外帶進來
+        cfg["lag"] = int(raw["lag"])
     return cfg
 
 

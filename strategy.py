@@ -337,8 +337,10 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
         ma = idx.rolling(risk["regime_ma"], min_periods=risk["regime_ma"]).mean()
         st["above"] = ~(idx < ma)                       # 均線還算不出來時視為多頭
     cash, hold = float(cfg["capital"]), {}              # hold: code -> 部位市值
-    last_px = prices.apply(pd.Series.last_valid_index)
-    gone = last_px[last_px < days[-1] - pd.Timedelta(days=DELIST_GAP)].to_dict()
+    gone = {}
+    if len(prices):                                     # 訊號日之後還沒有行情（模擬持股剛建立）時是空表
+        last_px = pd.to_datetime(prices.apply(pd.Series.last_valid_index), errors="coerce")
+        gone = last_px[last_px < days[-1] - pd.Timedelta(days=DELIST_GAP)].to_dict()
     delist_out = []
     nav, bench, trades, logs = [], [], [], []
     for k, s in enumerate(sigs):

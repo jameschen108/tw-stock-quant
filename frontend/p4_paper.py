@@ -12,6 +12,8 @@ sys.path[:0] = [str(_HERE), str(_HERE.parent)]
 
 import common
 import custom
+import llm_replay
+import llm_trader
 import mine
 import paper
 
@@ -396,7 +398,74 @@ def _llm() -> None:
     if len(shorts) > 1:
         short = st.segmented_control("模型", shorts, default=short, key="llm_model") or short
     _llm_compare(groups.get(short, {}), _book_sig())
+    models = sorted({m for m in dec.get("model", pd.Series(dtype=str)) if _model_short(m) == short})
+    if models:
+        _llm_selection(models[0])
+    _llm_replay(next(iter(models), llm_trader.A.MODELS.get(short, short)))
     _llm_decisions(dec, short)
+
+
+@st.cache_data(show_spinner="計算選股檢定…", max_entries=6)
+def _cached_selection(model: str, sig: str) -> dict | None:
+    dec = _load_decisions()
+    return llm_trader.selection_test(dec[dec["model"] == model].reset_index(drop=True), model)
+
+
+@st.cache_data(show_spinner="計算回放結果…", max_entries=6)
+def _cached_replay_eval(model: str, sig: str) -> dict | None:
+    return llm_replay.evaluate(model)
+
+
+def _replay_sig() -> str:
+    return common.data_sig() + "|" + (str(llm_replay.LOG.stat().st_mtime_ns) if llm_replay.LOG.exists() else "0")
+
+
+def _pctile_kpi(t: dict) -> tuple:
+    return ("LLM 在隨機分布的百分位", f"{t['pctile'] * 100:.0f}", f"單尾 p = {t['p_one_sided']:.2f}", t["p_one_sided"] < 0.05)
+
+
+def _llm_selection(model: str) -> None:
+    st.markdown("**選股檢定**")
+    t = _cached_selection(model, _book_sig())
+    if t is None:
+        common.empty("還沒有成交後的報酬。成交日之後更新資料，這裡就會出現。")
+        return
+    common.kpis([("LLM buy 平均報酬", common.signed_html(t["llm"]), f"{t['n_buy']} 檔"),
+                 ("全部候選", common.signed_html(t["quant"]), f"{t['n_all']} 檔"),
+                 ("隨機挑同樣檔數（中位數）", common.signed_html(t["rand_p50"]),
+                  f"90% 區間 {t['rand_p5']:+.1%} ~ {t['rand_p95']:+.1%}"),
+                 _pctile_kpi(t)])
+    st.caption(f"決策後第一個交易日收盤進場，持有中位數 {t['held_days']} 個交易日（未滿 60 日的算到最新資料日）；"
+               f"不扣成本、等權。隨機分布 = 每批從候選隨機挑和 LLM 一樣多檔，重複 {llm_trader.N_RANDOM} 次。"
+               "百分位 95 以上（p < 0.05）才算 LLM 挑得比隨機好；持有天數太短時結果主要是雜訊。")
+
+
+def _llm_replay(model: str) -> None:
+    st.markdown("**準前瞻回放（2026-07～09）**")
+    res = _cached_replay_eval(model, _replay_sig())
+    if res is None:
+        common.empty("還沒有回放紀錄。命令列跑 uv run llm_replay.py run --dry-run 估價，再跑 run。")
+        return
+    st.caption("模型知識截止 2026-06，拿之後三個月的事件、用當時的事實表重跑同一套決策。"
+               f"共 {len(res['ev'])} 檔，花費 US${res['cost']:.2f}。報酬從批次資料時點隔一個交易日收盤起算，不扣成本、等權。")
+    hs = [h for h in llm_replay.HORIZONS if h in res["tests"]]
+    if not hs:
+        common.empty("回放的報酬期間還不夠長。")
+        return
+    h = st.segmented_control("天期", [f"{x} 日" for x in hs], default=f"{hs[0]} 日", key=f"replay_h_{model}") or f"{hs[0]} 日"
+    t = res["tests"][int(h.split()[0])]
+    common.kpis([("LLM buy（選股）", common.signed_html(t["llm"]), f"{t['n_buy']} 檔，含等待時點 {t['llm_timed']:+.1%}"),
+                 ("全部候選", common.signed_html(t["all"]), f"{t['n']} 檔，對 0050 {t['x_all']:+.1%}"),
+                 ("隨機挑同樣檔數（中位數）", common.signed_html(t["rand_p50"]),
+                  f"90% 區間 {t['rand_p5']:+.1%} ~ {t['rand_p95']:+.1%}"),
+                 _pctile_kpi(t)])
+    st.caption(f"{t['n_batch']} 批有完整的 {h}報酬。LLM 沒買的平均 {t['not_buy']:+.1%}；"
+               f"全部候選贏 0050 的比例 {t['win_etf']:.0%}。")
+    b = res["batches"].rename(columns={"batch": "批次資料時點", "n": "候選", "n_buy": "LLM buy", "all": "全部",
+                                       "buy": "LLM buy 報酬", "not_buy": "沒買的", "x_all": "全部對 0050"})
+    st.dataframe(common.styled(b, fmt={c: "{:+.1%}" for c in ("全部", "LLM buy 報酬", "沒買的", "全部對 0050")},
+                               signed=["全部", "LLM buy 報酬", "沒買的", "全部對 0050"]), hide_index=True)
+    st.caption("各批都是 20 日報酬。三批方向不一致時，代表 LLM 的篩選沒有穩定的效果。")
 
 
 def _cost_line(res: dict) -> str:

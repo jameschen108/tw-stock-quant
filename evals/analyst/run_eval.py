@@ -6,10 +6,18 @@
 
 用法（在專案根目錄）:
   uv run evals/analyst/run_eval.py --limit 5            # 試跑前 5 題
-  uv run evals/analyst/run_eval.py                      # 全部 24 題
+  uv run evals/analyst/run_eval.py                      # 開發集全部 27 題
   uv run evals/analyst/run_eval.py --variant v1 --reps 2
   uv run evals/analyst/run_eval.py --variant v3 --model haiku   # 回答模型，預設 sonnet
   uv run evals/analyst/run_eval.py --cases why_nanya_rev,edge_buy_advice
+  uv run evals/analyst/run_eval.py --split holdout --variant v3   # 保留集：prompt 定案後才跑
+
+題組:
+  cases.jsonl    開發集（27 題）：改 prompt、比 variant 都用這組。這些題目在改 prompt 時都看過，分數會偏樂觀
+  holdout.jsonl  保留集（18 題）：同樣的類別、不同的股票與問題，2026-10-27 新增，沒有拿來調過 prompt。
+                 改 prompt 時不要看它的題目和結果；只在要報告最終成績時跑，結果寫在
+                 .claude/hillclimb/analyst_holdout/<variant>/，每次執行記在 holdout_runs.jsonl。
+                 同一個 system prompt 加同一個回答模型只能跑一次（--rerun 才能重跑，也會記下來）
 
 輸出 .claude/hillclimb/analyst/<variant>/：
   results.jsonl        每題一列（grade、usage、延遲、工具呼叫數）；跑到一半中斷，重跑會跳過已完成的 (題目, rep)
@@ -25,6 +33,7 @@
               LLM 評分（claude-sonnet-5-5，看得到完整工具結果）
 """
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -44,6 +53,9 @@ from report import load_dotenv  # noqa: E402
 
 HERE = Path(__file__).parent
 FLOW = ROOT / ".claude" / "hillclimb" / "analyst"
+FLOW_HOLDOUT = ROOT / ".claude" / "hillclimb" / "analyst_holdout"
+SPLITS = {"dev": HERE / "cases.jsonl", "holdout": HERE / "holdout.jsonl"}
+HOLDOUT_RUNS = HERE / "holdout_runs.jsonl"
 JUDGE_MODEL = "claude-sonnet-5-5"
 PRICES = {"claude-opus-5-5": (4.0, 20.0), "claude-sonnet-5-5": (2.0, 10.0), "claude-haiku-5-5": (0.10, 0.50)}   # 每百萬 token（輸入, 輸出）
 JUDGE_KEYS = ["grounded", "no_speculation", "answered", "no_advice", "case_rule"]
@@ -259,6 +271,8 @@ def main():
     ap.add_argument("--timeout-s", type=int, default=420)
     ap.add_argument("--regrade", action="store_true", help="只用已存的回答重新評分")
     ap.add_argument("--model", choices=list(A.MODELS), default="sonnet", help="回答用的模型（評分固定 Sonnet）")
+    ap.add_argument("--split", choices=list(SPLITS), default="dev", help="dev = 開發集（預設），holdout = 保留集")
+    ap.add_argument("--rerun", action="store_true", help="保留集：同一個 prompt 和模型已經跑過還要再跑")
     a = ap.parse_args()
     A.MODEL = A.MODELS[a.model]
     if a.variant != "baseline" and not re.fullmatch(r"v\d+", a.variant):
@@ -266,13 +280,25 @@ def main():
 
     load_dotenv()
     client = anthropic.Anthropic(max_retries=4)
-    cases = [json.loads(l) for l in (HERE / "cases.jsonl").read_text().splitlines() if l.strip()]
+    cases = [json.loads(l) for l in SPLITS[a.split].read_text().splitlines() if l.strip()]
+    holdout = a.split == "holdout"
+    prompt_sha = hashlib.sha256(A.SYSTEM.encode()).hexdigest()[:12]
+    if holdout:
+        if a.cases or a.limit or a.regrade:
+            sys.exit("保留集只能整組跑（不能用 --cases、--limit、--regrade）")
+        runs = [json.loads(l) for l in HOLDOUT_RUNS.read_text().splitlines() if l.strip()] if HOLDOUT_RUNS.exists() else []
+        same = [r for r in runs if r["prompt_sha"] == prompt_sha and r["model"] == A.MODEL]
+        print(f"保留集已經跑過 {len(runs)} 次（不同 prompt 共 {len({r['prompt_sha'] for r in runs})} 個）")
+        if same and not a.rerun:
+            sys.exit(f"這個 prompt（{prompt_sha}）和模型 {A.MODEL} 已經在 {same[-1]['time']} 跑過保留集；確定要重跑加 --rerun")
     if a.cases:
         want = set(a.cases.split(","))
         cases = [c for c in cases if c["id"] in want]
     if a.limit:
         cases = cases[: a.limit]
-    out = FLOW / a.variant
+    out = (FLOW_HOLDOUT if holdout else FLOW) / a.variant
+    if holdout and (out / "results.jsonl").exists():
+        sys.exit(f"{out} 已經有結果；保留集每次要用新的 variant 名稱")
     out.mkdir(parents=True, exist_ok=True)
     state = FLOW / "_state.json"
     if not state.exists():
@@ -341,6 +367,12 @@ def main():
     c_judge = [cost(r["judge_model"], r["judge_usage"]) for r in rows]
     tot = [x + y for x, y in zip(c_model, c_judge)]
     s = sorted(tot)
+    if holdout:
+        with HOLDOUT_RUNS.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"time": datetime.now().isoformat(timespec="seconds"), "variant": a.variant,
+                                "model": A.MODEL, "prompt_sha": prompt_sha, "reps": a.reps, "n": n, "pass": k,
+                                "metrics": {m: round(sum(r["grade"][m] for r in rows) / n, 3) for m in METRICS}},
+                               ensure_ascii=False) + "\n")
     print(f"每題費用 中位數 ${s[len(s) // 2]:.3f}（範圍 ${s[0]:.3f}–${s[-1]:.3f}；回答 ${sum(c_model) / n:.3f}、評分 ${sum(c_judge) / n:.3f}）"
           f"，延遲中位數 {sorted(r['latency_s'] for r in rows)[n // 2]}s")
 

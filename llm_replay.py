@@ -164,50 +164,76 @@ def window_returns(rets: pd.DataFrame, code: str, signal: pd.Timestamp) -> dict:
     return out
 
 
-def cmd_report(model: str):
+def evaluate(model: str) -> dict | None:
+    """回放的報酬與選股檢定：{"ev": 每檔明細, "batches": 各批 20 日, "tests": {天期: 檢定}}；還沒有紀錄回傳 None。"""
     f = finals(model)
     if not len(f):
-        print("還沒有回放紀錄")
-        return
+        return None
     rets = load_rets(pd.Timestamp(f["batch"].min()))
     rows = []
     for r in f.itertuples():
         base = window_returns(rets, r.code, pd.Timestamp(r.batch))
         timed = window_returns(rets, r.code, pd.Timestamp(r.asof))
-        row = {"batch": r.batch, "code": r.code, "decision": r.decision, "round": r.round}
+        row = {"batch": r.batch, "code": r.code, "name": r.name, "decision": r.decision, "round": r.round}
         for h in HORIZONS:
             row[f"r{h}"], row[f"x{h}"] = base[h]
             row[f"t{h}"] = timed[h][0]
         rows.append(row)
     ev = pd.DataFrame(rows)
-    ev.to_csv(OUT / "paper" / "llm_replay_returns.csv", index=False)
-    print(f"{model}：{len(ev)} 檔，" + "、".join(f"{k} {v}" for k, v in ev["decision"].value_counts().items())
-          + f"；經過 wait 才定案 {int((ev['round'] > 0).sum())} 檔；累計費用 US${load_log()['cost_usd'].sum():.3f}")
-    print("\n各批（20 日報酬，不扣成本）:")
+    batches = []
     for b, g in ev.groupby("batch"):
         buy = g["decision"] == "buy"
-        print(f"  {b}：候選 {len(g)}、buy {buy.sum()}　全部 {g['r20'].mean():+.2%}　buy {g.loc[buy, 'r20'].mean():+.2%}"
-              f"　不買 {g.loc[~buy, 'r20'].mean():+.2%}　0050 超額（全部）{g['x20'].mean():+.2%}")
+        batches.append({"batch": b, "n": len(g), "n_buy": int(buy.sum()), "all": g["r20"].mean(),
+                        "buy": g.loc[buy, "r20"].mean(), "not_buy": g.loc[~buy, "r20"].mean(), "x_all": g["x20"].mean()})
+    tests = {}
     for h in HORIZONS:
         d = ev.dropna(subset=[f"r{h}"])
         if not len(d) or not (d["decision"] == "buy").any():
-            print(f"\n{h} 日：資料還不夠")
             continue
-        batches = [(g[f"r{h}"].to_numpy(), int((g["decision"] == "buy").sum())) for _, g in d.groupby("batch")]
+        groups = [(g[f"r{h}"].to_numpy(), int((g["decision"] == "buy").sum())) for _, g in d.groupby("batch")]
         rng = random.Random(f"{model}|replay|{h}")
         draws = []
         for _ in range(N_RANDOM):
-            picked = [x for r, n in batches for x in rng.sample(list(r), n)]
+            picked = [x for r, n in groups for x in rng.sample(list(r), n)]
             draws.append(sum(picked) / len(picked))
         draws = pd.Series(draws)
         buy = d["decision"] == "buy"
         llm = d.loc[buy, f"r{h}"].mean()
-        print(f"\n{h} 日（{d['batch'].nunique()} 批、{len(d)} 檔有完整報酬，{buy.sum()} 檔 buy）:\n"
-              f"  全部候選 {d[f'r{h}'].mean():+.2%}（0050 超額 {d[f'x{h}'].mean():+.2%}，勝 0050 比例 {(d[f'x{h}'] > 0).mean():.0%}）\n"
-              f"  LLM buy（選股）{llm:+.2%}（0050 超額 {d.loc[buy, f'x{h}'].mean():+.2%}）"
-              f"　LLM buy（含等待）{d.loc[buy, f't{h}'].mean():+.2%}　不買 {d.loc[~buy, f'r{h}'].mean():+.2%}\n"
-              f"  隨機挑同樣檔數 {N_RANDOM} 次：中位數 {draws.median():+.2%}，90% 區間 {draws.quantile(0.05):+.2%} ~ {draws.quantile(0.95):+.2%}\n"
-              f"  LLM 在隨機分布的第 {(draws < llm).mean() * 100:.0f} 百分位（單尾 p = {(draws >= llm).mean():.3f}）")
+        tests[h] = {"n_batch": d["batch"].nunique(), "n": len(d), "n_buy": int(buy.sum()),
+                    "all": d[f"r{h}"].mean(), "x_all": d[f"x{h}"].mean(), "win_etf": (d[f"x{h}"] > 0).mean(),
+                    "llm": llm, "x_llm": d.loc[buy, f"x{h}"].mean(), "llm_timed": d.loc[buy, f"t{h}"].mean(),
+                    "not_buy": d.loc[~buy, f"r{h}"].mean(), "rand_p5": draws.quantile(0.05),
+                    "rand_p50": draws.median(), "rand_p95": draws.quantile(0.95),
+                    "pctile": float((draws < llm).mean()), "p_one_sided": float((draws >= llm).mean())}
+    log = load_log()
+    return {"ev": ev, "batches": pd.DataFrame(batches), "tests": tests,
+            "cost": float(log.loc[log["model"] == model, "cost_usd"].sum())}
+
+
+def cmd_report(model: str):
+    res = evaluate(model)
+    if res is None:
+        print("還沒有回放紀錄")
+        return
+    ev = res["ev"]
+    ev.to_csv(OUT / "paper" / "llm_replay_returns.csv", index=False)
+    print(f"{model}：{len(ev)} 檔，" + "、".join(f"{k} {v}" for k, v in ev["decision"].value_counts().items())
+          + f"；經過 wait 才定案 {int((ev['round'] > 0).sum())} 檔；累計費用 US${res['cost']:.3f}")
+    print("\n各批（20 日報酬，不扣成本）:")
+    for b in res["batches"].itertuples():
+        print(f"  {b.batch}：候選 {b.n}、buy {b.n_buy}　全部 {b.all:+.2%}　buy {b.buy:+.2%}"
+              f"　不買 {b.not_buy:+.2%}　0050 超額（全部）{b.x_all:+.2%}")
+    for h in HORIZONS:
+        t = res["tests"].get(h)
+        if t is None:
+            print(f"\n{h} 日：資料還不夠")
+            continue
+        print(f"\n{h} 日（{t['n_batch']} 批、{t['n']} 檔有完整報酬，{t['n_buy']} 檔 buy）:\n"
+              f"  全部候選 {t['all']:+.2%}（0050 超額 {t['x_all']:+.2%}，勝 0050 比例 {t['win_etf']:.0%}）\n"
+              f"  LLM buy（選股）{t['llm']:+.2%}（0050 超額 {t['x_llm']:+.2%}）"
+              f"　LLM buy（含等待）{t['llm_timed']:+.2%}　不買 {t['not_buy']:+.2%}\n"
+              f"  隨機挑同樣檔數 {N_RANDOM} 次：中位數 {t['rand_p50']:+.2%}，90% 區間 {t['rand_p5']:+.2%} ~ {t['rand_p95']:+.2%}\n"
+              f"  LLM 在隨機分布的第 {t['pctile'] * 100:.0f} 百分位（單尾 p = {t['p_one_sided']:.3f}）")
     print("\n明細：data/paper/llm_replay_returns.csv")
 
 

@@ -100,7 +100,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 每期紀錄（訊號日、選了哪些、權重） | `data/paper/strat_ledger.parquet`：signal_date、strategy、hash、code、weight、in_pick、pick_order、regime_on |
 | 自選股回測（輸入代號、權重、起訖日、本金、買進持有或每月調回；按了才算） | `custom.run()`：回傳 nav、daily（strategy、pool、etf）、perf、trades、missing、weights；不寫檔 |
 | 自選組合（建立、改持股、封存；淨值對同組等權與 0050） | `mine.py`：紀錄 `data/paper/mine_ledger.parquet`（只追加）、設定 `mine_meta.json`；`mine.replay(name)` 每次現算淨值，還沒進場回傳 None。`LLM篩選-<model>`、`量化全買`、`隨機對照-<model>` 是實驗帳本，只能看，不能改、不能封存 |
-| LLM 決策（三組淨值加 0050、比較表、決策紀錄） | 只讀 `data/paper/llm_decisions.jsonl`。三組淨值用 `mine.replay`。點決策列看理由與風險，再打開個股頁。不從前端呼叫 API |
+| LLM 決策（三組淨值加 0050、比較表、選股檢定、準前瞻回放、決策紀錄） | 只讀 `data/paper/llm_decisions.jsonl` 與 `llm_replay.jsonl`。選股檢定用 `llm_trader.selection_test`，回放結果用 `llm_replay.evaluate`（各自快取）。三組淨值用 `mine.replay`。點決策列看理由與風險，再打開個股頁。不從前端呼叫 API |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
 

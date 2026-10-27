@@ -156,8 +156,10 @@ def facts_json(code: str, asof: pd.Timestamp) -> str:
     return A.stock_facts.func(code)
 
 
-def decide(client, model: str, ev: pd.Series, asof: pd.Timestamp, prior: str | None = None) -> dict:
-    facts = facts_json(ev["code"], asof)
+def decide(client, model: str, ev: pd.Series, asof: pd.Timestamp, prior: str | None = None,
+           facts: str | None = None) -> dict:
+    """facts：事先算好的事實表（facts_json 改全域 ASOF，不能多執行緒同時算）。"""
+    facts = facts if facts is not None else facts_json(ev["code"], asof)
     head = (f"候選：{ev['code']} {ev['name']}，{ev['period']:%Y-%m} 月營收 {ev['avail_date']:%Y-%m-%d} 公告，"
             f"單月年增 {ev['yoy']:.1f}%、比前歷史高點多 {ev['vs_high']:.1f}%。資料時點 {asof:%Y-%m-%d}。")
     if prior:

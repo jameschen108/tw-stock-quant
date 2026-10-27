@@ -35,6 +35,7 @@
 - `status` 另做選股檢定：LLM 買進的平均報酬，對照每批隨機挑同樣檔數重複 1,000 次的分布，看落在第幾百分位。
 - 決策寫進 `data/paper/llm_decisions.jsonl`，只追加不改，含模型、prompt 雜湊、token 數與費用；模型看到的輸入原文另存在 `data/paper/llm_inputs/`，之後可以重建當時的判斷依據。
 - 模型知識截止在 2026-06，更早的日期可能記得後來的股價，所以只能從現在往後累積證據；`try --asof` 只用來除錯。
+- `llm_replay.py` 準前瞻回放：拿知識截止之後的 2026-07～09 三批事件，用當時的事實表重跑同一套決策（wait 在第 10、20 個交易日重問），再比 LLM buy、全部候選、每批隨機挑同樣檔數 1,000 次的 20 日與 60 日報酬。紀錄寫在 `data/paper/llm_replay.jsonl`，和前向的決策分開。
 
 **每日速覽與個股報告**
 - 觀察名單（`watchlist.txt`）每日比對上次結果，超過門檻就提醒：單日漲跌超過 7%、綜合分數變動 15 分以上、外資持股 5 日變動 1 點以上、融資 5 日變動 15% 以上、看漲看跌標籤改變。同時列出新公布的月營收、季財報與重大訊息。
@@ -136,6 +137,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `custom.py` | 自選股模擬：自己挑股票、權重和起訖日回頭重播，對比 0050 |
 | `diagnose.py` | 拆解綜合分數輸給同池等權的原因 |
 | `event_study.py` | 月營收與外資事件研究，輸出 `data/event_study.csv` |
+| `llm_replay.py` | LLM 決策的準前瞻回放：`run --dry-run` 估費用、`run` 回放 2026-07～09、`report` 選股檢定 |
 | `llm_trader.py` | LLM 決策模擬：`candidates` 列候選、`run --dry-run` 估費用、`run` 決策並更新三組持股、`status` 看績效 |
 | `report.py`、`daily.py` | 個股報告、每日速覽，輸出到 `reports/` |
 | `analyst.py`、`evals/analyst/` | 分析師問答（命令列）與評測題組 |

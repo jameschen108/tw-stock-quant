@@ -79,3 +79,68 @@ def test_costs_reduce_nav(market):
     paid = S.simulate(cfg, pd.DataFrame(), rets, fixed=sig)
     assert paid["nav"].iloc[-1] < free["nav"].iloc[-1]
     assert paid["trades"]["fees"].iloc[0] > 0
+
+
+def test_caps_hold_together_when_they_conflict():
+    # 產業 x 有 4 檔、y 只有 1 檔：產業上限把 x 多出的權重分給 e，舊版會讓 e 超過單檔上限
+    pick = pd.DataFrame({"code": list("abcde"), "industry": ["x", "x", "x", "x", "y"]})
+    pos = {**S.DEFAULTS["position"], "max_weight": 0.3, "max_industry": 0.4}
+    w = S.target_weights(pick, pos, "code", True)
+    assert w.max() <= 0.3 + 1e-9
+    assert w.groupby(pick.set_index("code")["industry"]).sum().max() <= 0.4 + 1e-9
+    assert w.sum() <= 1.0 + 1e-9                           # 分不完的變現金
+
+
+def test_lag_in_toml_is_used(tmp_path, market):
+    base = (ROOT / "strategies" / "top30.toml").read_text(encoding="utf-8")
+    plain, lagged = tmp_path / "plain.toml", tmp_path / "lagged.toml"
+    plain.write_text(base, encoding="utf-8")
+    lagged.write_text("lag = 2\n" + base, encoding="utf-8")
+    cfg_plain, cfg_lag = S.load_config(plain), S.load_config(lagged)
+    assert "lag" not in cfg_plain                          # 沒寫就不進設定，舊設定的雜湊不變
+    assert cfg_lag["lag"] == 2
+    assert S.config_hash(cfg_plain) != S.config_hash(cfg_lag)
+
+    rets = market()
+    cfg = zero_cost_cfg()
+    cfg["lag"] = 2
+    res = S.simulate(cfg, pd.DataFrame(), rets, fixed=fixed_signals({DAYS[10]: pd.Series(1.0, index=["1101"])}))
+    assert res["trades"]["exe"].iloc[0] == DAYS[12]        # 訊號日後第 2 個交易日成交
+
+
+def _delisted_market(market):
+    """1101 在 DAYS[20] 之後就沒有行情（離資料尾端超過 DELIST_GAP 天）。"""
+    px = make_prices()
+    px = px[~((px["code"] == "1101") & (px["date"] > DAYS[20]))]
+    return market(px)
+
+
+def test_delisted_position_goes_to_cash(market):
+    rets = _delisted_market(market)
+    sig = fixed_signals({DAYS[10]: pd.Series(0.5, index=["1101", "1102"]),
+                         DAYS[40]: pd.Series(1.0, index=["1102"])})
+    res = S.simulate(zero_cost_cfg(), pd.DataFrame(), rets, fixed=sig)
+    t = res["trades"]
+    assert t["delisted"].iloc[1] == ["1101"]               # 第二次換股時轉成現金
+    assert not any("1101" in b for b in t["blocked"].iloc[1])
+    assert set(res["hold"]) == {"1102"}
+    assert res["cash"] / res["nav"].iloc[-1] < 0.01        # 轉出來的現金有再投入
+
+
+def test_delist_return_is_applied(market, monkeypatch):
+    base = _delisted_market(market)
+    monkeypatch.setattr(S, "DELIST_RET", -0.5)
+    hit = _delisted_market(market)
+    assert hit.at[DAYS[21], "1101"] == pytest.approx(-0.5)  # 最後一筆行情的隔一個交易日
+    assert np.isnan(base.at[DAYS[21], "1101"])
+    sig = fixed_signals({DAYS[10]: pd.Series(0.5, index=["1101", "1102"])})
+    nav0 = S.simulate(zero_cost_cfg(), pd.DataFrame(), base, fixed=sig)["nav"].iloc[-1]
+    nav1 = S.simulate(zero_cost_cfg(), pd.DataFrame(), hit, fixed=sig)["nav"].iloc[-1]
+    assert nav1 < nav0 * 0.8
+
+
+def test_simulate_with_no_prices_after_signal(market):
+    # 模擬持股剛建立：訊號日在最後一筆行情之後，價格表是空的，不能出錯
+    rets = market()
+    sig = fixed_signals({DAYS[-1] + pd.Timedelta(days=3): pd.Series(1.0, index=["1101"])})
+    assert S.simulate(zero_cost_cfg(), pd.DataFrame(), rets, fixed=sig) is None

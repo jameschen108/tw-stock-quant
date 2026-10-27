@@ -148,6 +148,14 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 各腳本開頭的說明文字有完整用法，例如 `uv run strategy.py strategies/top30.toml`。
 
+## 測試與 CI
+
+`tests/` 用合成行情測回測的核心邏輯（設定檔、權重上限、報酬清理、成交與成本），不需要 `data/`。每次推送和開 PR，GitHub Actions（`.github/workflows/ci.yml`）會跑 ruff 的語法檢查和這些測試。本機執行：
+
+```bash
+uv run --isolated --no-project --with pytest --with pandas --with numpy --with pyarrow pytest tests -q
+```
+
 ## 分析師問答與費用
 
 `analyst.py`、`report.py`、`llm_trader.py` 與前端的問答頁會呼叫 Anthropic API，**會產生費用**。在專案根目錄建立 `.env`：

@@ -1,0 +1,18 @@
+# 每次推送與 PR 跑的檢查。data/ 不在 repo 裡（TEJ 授權），CI 只用 tests/ 的合成行情，不呼叫 Claude API。
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: 語法與未定義名稱
+        run: uvx ruff check --select E9,F63,F7,F82 .
+      - name: 核心邏輯測試
+        run: uv run --isolated --no-project --python 3.12 --with pytest --with pandas --with numpy --with pyarrow pytest tests -q

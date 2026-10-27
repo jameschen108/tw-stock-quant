@@ -251,6 +251,8 @@ def event_returns(dec: pd.DataFrame) -> pd.DataFrame:
 def selection_test(dec: pd.DataFrame, model: str) -> dict | None:
     """LLM buy 的平均報酬，對照「每批隨機挑同樣檔數」重複 N_RANDOM 次的分布（同批次同進場日，曝險時點相同）。"""
     ev = event_returns(dec)
+    if "held" not in ev:                                 # 還沒有任何成交日
+        return None
     ev = ev[ev["held"] > 0]
     if not len(ev) or not (ev["decision"] == "buy").any():
         return None

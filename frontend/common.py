@@ -61,7 +61,7 @@ div[data-testid="stMetricValue"] {font-size: 1.45rem;}
 .kpi .t {font-size:.78rem; opacity:.68;}
 .kpi .v {font-size:1.5rem; font-weight:650; line-height:1.35; font-variant-numeric:tabular-nums;}
 .kpi .s {font-size:.76rem; opacity:.62;}
-.kpi.accent {border-color:rgba(229,72,77,.5); background:rgba(229,72,77,.06);}
+.kpi.accent {border-color:rgba(59,130,246,.5); background:rgba(59,130,246,.06);}  /* 紅綠留給漲跌 */
 .badge {display:inline-block; padding:.05rem .5rem; border-radius:.4rem; font-size:.78rem; font-weight:600;
         margin:0 .25rem .2rem 0; white-space:nowrap;}
 .badge.bull {background:rgba(229,72,77,.15); color:#e5484d;}
@@ -121,6 +121,21 @@ def page_title(title: str, sub: str = "") -> None:
                 unsafe_allow_html=True)
 
 
+def segmented(label: str, options: list[str], default: str, key: str, **kw) -> str:
+    """單選的 segmented_control。原生的再點一次已選的會變成 None，這裡改回上一個選項。"""
+    last = f"_{key}_last"
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = st.session_state.get(last) if st.session_state.get(last) in options else default
+
+    def keep():
+        if st.session_state.get(key) is None:
+            st.session_state[key] = st.session_state.get(last, default)
+        st.session_state[last] = st.session_state[key]
+
+    st.session_state.setdefault(last, st.session_state[key])
+    return st.segmented_control(label, options, key=key, on_change=keep, **kw) or default
+
+
 def kpis(items: list[tuple], ) -> None:
     """items: (標題, 值 HTML, 小字, accent?)。值已經是 HTML，呼叫端負責 escape。"""
     cells = []
@@ -130,6 +145,11 @@ def kpis(items: list[tuple], ) -> None:
         cells.append(f'<div class="kpi{acc}"><div class="t">{esc(t)}</div><div class="v">{v}</div>'
                      f'<div class="s">{esc(s)}</div></div>')
     st.markdown(f'<div class="kgrid">{"".join(cells)}</div>', unsafe_allow_html=True)
+
+
+def table(data, **kw):
+    """st.dataframe，缺值顯示「—」。原生預設顯示 None，Styler 的 na_rep 管不到。"""
+    return st.dataframe(data, placeholder="—", **kw)
 
 
 def empty(msg: str) -> None:

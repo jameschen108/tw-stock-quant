@@ -20,6 +20,17 @@ import paper
 STRAT_NAV = paper.PAPER / "strat_nav.parquet"
 
 
+def _wait_entry(what: str, signal_date: str | None = None) -> None:
+    """還沒進場時的說明。進場日看價格資料，不寫死日期。"""
+    last = common.load_status().get("last_price_date")
+    msg = f"{what}要等進場後才有：訊號日{f' {signal_date} ' if signal_date else ''}的下一個交易日收盤進場"
+    if last and signal_date and str(last) <= str(signal_date):
+        msg += f"，價格資料目前只到 {last}，先更新資料。"
+    else:
+        msg += f"（價格資料到 {last or '—'}）。"
+    common.empty(msg)
+
+
 def _top30(s: dict) -> None:
     if not s:
         common.empty("還沒有模擬持股紀錄。")
@@ -42,7 +53,7 @@ def _top30(s: dict) -> None:
                                                        paper.ETF: common.C_ETF}, 360)
             common.chart(fig)
         else:
-            common.empty("累積淨值圖要等 10/26 進場之後，data/paper/nav.parquet 才會有資料。")
+            _wait_entry("累積淨值圖", s.get("signal_date"))
     with right:
         holds = pd.DataFrame(s.get("holdings") or [])
         if holds.empty:
@@ -51,7 +62,7 @@ def _top30(s: dict) -> None:
             show = holds.rename(columns={"rank": "名次", "code": "代號", "name": "名稱",
                                          "ret_since_entry": "進場以來"})[["名次", "代號", "名稱", "進場以來"]]
             show["進場以來"] = pd.to_numeric(show["進場以來"], errors="coerce")
-            ev = st.dataframe(common.styled(show, fmt={"進場以來": "{:+.2%}"}, signed=["進場以來"]), hide_index=True,
+            ev = common.table(common.styled(show, fmt={"進場以來": "{:+.2%}"}, signed=["進場以來"]), hide_index=True,
                               height=360, on_select="rerun", selection_mode="single-row", key="paper_holds")
             sel = ev.selection.rows if ev and ev.selection else []
             if sel:
@@ -87,14 +98,14 @@ def _multi(rows: list[dict]) -> None:
             if has:
                 df = pd.DataFrame(x["holdings"]).rename(columns={"code": "代號", "name": "名稱", "value": "市值(元)",
                                                                  "weight": "佔資產"})
-                st.dataframe(common.styled(df[["代號", "名稱", "市值(元)", "佔資產"]],
+                common.table(common.styled(df[["代號", "名稱", "市值(元)", "佔資產"]],
                                            fmt={"市值(元)": "{:,.0f}", "佔資產": "{:.1%}"}), hide_index=True)
             else:
                 df = pd.DataFrame(x.get("targets") or [])
                 if not df.empty:
                     st.markdown(f"本期目標權重（訊號日 {x.get('signal_date')}）")
                     df = df.rename(columns={"code": "代號", "name": "名稱", "weight": "目標權重"})
-                    st.dataframe(common.styled(df[["代號", "名稱", "目標權重"]], fmt={"目標權重": "{:.1%}"}),
+                    common.table(common.styled(df[["代號", "名稱", "目標權重"]], fmt={"目標權重": "{:.1%}"}),
                                  hide_index=True, height=240)
 
 
@@ -121,7 +132,7 @@ def _ledger() -> None:
         "in_pick": "選進組合", "pick_order": "順序", "regime_on": "濾網開"})
     if "訊號日" in show:
         show["訊號日"] = pd.to_datetime(show["訊號日"]).dt.strftime("%Y-%m-%d")
-    st.dataframe(common.styled(show, fmt={"權重": "{:.2%}", "順序": "{:.0f}"}), hide_index=True)
+    common.table(common.styled(show, fmt={"權重": "{:.2%}", "順序": "{:.0f}"}), hide_index=True)
     st.caption(f"{len(show):,} 列。紀錄只追加不改寫；設定改過會用新的雜湊重新起算。")
 
 
@@ -135,7 +146,7 @@ def _strat_nav() -> None:
         st.warning("strat_nav.parquet 缺 strategy / date / nav 欄，先不畫。")
         return
     if df.empty:
-        common.empty("data/paper/strat_nav.parquet 已在，目前 0 列。10/26 進場之後才有淨值曲線。")
+        _wait_entry("淨值曲線")
         return
     names = sorted(df["strategy"].dropna().unique())
     pick = st.multiselect("要畫的策略", names, default=names, key="strat_nav_pick")
@@ -161,7 +172,7 @@ def _weight_table(weights: pd.Series) -> None:
     names = custom.names_of(list(weights.index))
     df = pd.DataFrame({"代號": list(weights.index), "名稱": [names.get(c, "") for c in weights.index],
                        "目標權重": weights.values})
-    st.dataframe(common.styled(df, fmt={"目標權重": "{:.1%}"}), hide_index=True)
+    common.table(common.styled(df, fmt={"目標權重": "{:.1%}"}), hide_index=True)
 
 
 def _cmp_table(daily: pd.DataFrame, perf: dict, labels: list[tuple[str, str]]) -> None:
@@ -171,7 +182,7 @@ def _cmp_table(daily: pd.DataFrame, perf: dict, labels: list[tuple[str, str]]) -
         rows.append({"組合": label, "總報酬": (1 + daily[key]).prod() - 1, "年化": p.get("cagr"),
                      "波動": p.get("vol"), "Sharpe": p.get("sharpe"), "最大回落": p.get("mdd")})
     df = pd.DataFrame(rows)
-    st.dataframe(common.styled(df, fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
+    common.table(common.styled(df, fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
                                         "Sharpe": "{:.2f}", "最大回落": "{:.1%}"},
                                signed=["總報酬", "年化"]), hide_index=True)
 
@@ -291,7 +302,7 @@ def _llm_compare(group: dict[str, str], sig: str) -> None:
         rows.append({"組合": paper.ETF, "總報酬": (1 + ref["daily"]["etf"]).prod() - 1,
                      "年化": ep.get("cagr"), "波動": ep.get("vol"), "Sharpe": ep.get("sharpe"),
                      "最大回落": ep.get("mdd"), "持股": pd.NA})
-        st.dataframe(common.styled(pd.DataFrame(rows), fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
+        common.table(common.styled(pd.DataFrame(rows), fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}",
                                                             "Sharpe": "{:.2f}", "最大回落": "{:.1%}", "持股": "{:.0f}"},
                                    signed=["總報酬", "年化"]), hide_index=True)
         note = f"0050 跟「{_LLM_LABEL[ref_role]}」同一段期間。不到 20 個交易日不計算年化、波動和 Sharpe。"
@@ -307,7 +318,7 @@ def _llm_compare(group: dict[str, str], sig: str) -> None:
     for role, w in held.items():
         show[_LLM_LABEL[role]] = [w.get(c, float("nan")) for c in codes]
     st.markdown("**目前目標權重**")
-    ev = st.dataframe(common.styled(show, fmt={_LLM_LABEL[r]: "{:.1%}" for r, _ in ordered}), hide_index=True,
+    ev = common.table(common.styled(show, fmt={_LLM_LABEL[r]: "{:.1%}" for r, _ in ordered}), hide_index=True,
                       height=320, on_select="rerun", selection_mode="single-row",
                       key=f"llm_holds_{'|'.join(group.values())}")
     st.caption("有數字的是這組目前持有、等權。點一列打開個股頁。")
@@ -339,8 +350,8 @@ def _llm_decisions(dec: pd.DataFrame, short: str) -> None:
         ("等待", f"{int(counts.get('等待', 0))}", ""),
         ("費用", f"US${cost:.2f}" if pd.notna(cost) else "—", "累計"),
     ])
-    pick = st.segmented_control("決策篩選", ["全部", "買", "不買", "等待"], default="全部",
-                                key=f"llm_dec_filter_{short}", label_visibility="collapsed") or "全部"
+    pick = common.segmented("決策篩選", ["全部", "買", "不買", "等待"], "全部",
+                            key=f"llm_dec_filter_{short}", label_visibility="collapsed")
     if pick != "全部":
         view = view[view["決策"] == pick]
     view = view.sort_values("time", ascending=False).reset_index(drop=True)
@@ -357,7 +368,7 @@ def _llm_decisions(dec: pd.DataFrame, short: str) -> None:
         "信心": pd.to_numeric(view["conviction"], errors="coerce"),
         "摘要": view["summary"].fillna("").map(lambda s: s if len(str(s)) <= 72 else str(s)[:72] + "…"),
     })
-    ev = st.dataframe(common.styled(show, fmt={"年增": "{:.1%}", "信心": "{:.0f}"}), hide_index=True, height=420,
+    ev = common.table(common.styled(show, fmt={"年增": "{:.1%}", "信心": "{:.0f}"}), hide_index=True, height=420,
                       on_select="rerun", selection_mode="single-row", key=f"llm_dec_{short}_{pick}")
     st.caption("點一列看理由與風險。紀錄只追加，不在這裡重跑。")
     sel = ev.selection.rows if ev and ev.selection else []
@@ -396,7 +407,7 @@ def _llm() -> None:
         return
     short = shorts[0]
     if len(shorts) > 1:
-        short = st.segmented_control("模型", shorts, default=short, key="llm_model") or short
+        short = common.segmented("模型", shorts, short, key="llm_model")
     _llm_compare(groups.get(short, {}), _book_sig())
     models = sorted({m for m in dec.get("model", pd.Series(dtype=str)) if _model_short(m) == short})
     if models:
@@ -452,7 +463,7 @@ def _llm_replay(model: str) -> None:
     if not hs:
         common.empty("回放的報酬期間還不夠長。")
         return
-    h = st.segmented_control("天期", [f"{x} 日" for x in hs], default=f"{hs[0]} 日", key=f"replay_h_{model}") or f"{hs[0]} 日"
+    h = common.segmented("天期", [f"{x} 日" for x in hs], f"{hs[0]} 日", key=f"replay_h_{model}")
     t = res["tests"][int(h.split()[0])]
     common.kpis([("LLM buy（選股）", common.signed_html(t["llm"]), f"{t['n_buy']} 檔，含等待時點 {t['llm_timed']:+.1%}"),
                  ("全部候選", common.signed_html(t["all"]), f"{t['n']} 檔，對 0050 {t['x_all']:+.1%}"),
@@ -463,7 +474,7 @@ def _llm_replay(model: str) -> None:
                f"全部候選贏 0050 的比例 {t['win_etf']:.0%}。")
     b = res["batches"].rename(columns={"batch": "批次資料時點", "n": "候選", "n_buy": "LLM buy", "all": "全部",
                                        "buy": "LLM buy 報酬", "not_buy": "沒買的", "x_all": "全部對 0050"})
-    st.dataframe(common.styled(b, fmt={c: "{:+.1%}" for c in ("全部", "LLM buy 報酬", "沒買的", "全部對 0050")},
+    common.table(common.styled(b, fmt={c: "{:+.1%}" for c in ("全部", "LLM buy 報酬", "沒買的", "全部對 0050")},
                                signed=["全部", "LLM buy 報酬", "沒買的", "全部對 0050"]), hide_index=True)
     st.caption("各批都是 20 日報酬。三批方向不一致時，代表 LLM 的篩選沒有穩定的效果。")
 
@@ -486,7 +497,7 @@ def _custom() -> None:
     start = c2.date_input("開始日", pd.Timestamp("2023-01-03"), key="cu_start")
     end = c3.date_input("結束日", end0, max_value=end0, key="cu_end")
     cap = c4.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="cu_cap")
-    mode = st.segmented_control("調整方式", ["買進持有", "每月調回目標權重"], default="買進持有", key="cu_mode") or "買進持有"
+    mode = common.segmented("調整方式", ["買進持有", "每月調回目標權重"], "買進持有", key="cu_mode")
     if st.button("開始回測", icon=":material/play_arrow:", key="cu_run"):
         try:
             with st.spinner("回測中…"):
@@ -583,7 +594,7 @@ def _mine() -> None:
         with st.expander(f"歷次訊號（{len(sigs)}）"):
             rows = [{"訊號日": f"{s:%Y-%m-%d}", "代號": c, "目標權重": float(w)}
                     for s, weights in sigs.items() for c, w in weights.items()]
-            st.dataframe(common.styled(pd.DataFrame(rows), fmt={"目標權重": "{:.1%}"}), hide_index=True)
+            common.table(common.styled(pd.DataFrame(rows), fmt={"目標權重": "{:.1%}"}), hide_index=True)
     if _is_llm_book(name):
         st.caption("這組由 llm_trader.py 管理，不能改持股，也不能封存。三組比較和每檔理由在「LLM 決策」。")
     else:
@@ -619,10 +630,9 @@ summary = common.cached_paper_summary(sig)
 strats = paper.load_strategy_summaries()
 common.page_title("模擬持股", f"即時紀錄，起點之前沒有資料・多策略 {len(strats)} 個")
 
-section = st.segmented_control(
+section = common.segmented(
     "區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股回測", "自選組合", "LLM 決策", "追蹤設定"],
-    default="綜合分數前 30", key="paper_section", label_visibility="collapsed")
-section = section or "綜合分數前 30"
+    "綜合分數前 30", key="paper_section", label_visibility="collapsed")
 if section == "綜合分數前 30":
     _top30(summary)
 elif section == "多策略":

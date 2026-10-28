@@ -61,7 +61,7 @@ def _watch_table(rows: list[dict]) -> None:
              "法人5日(張)": "{:+,.0f}"},
         signed=["1日", "5日", "分數變化", "外資5日(點)", "融資5日", "法人5日(張)"],
         labels=["短期", "中期", "長期"])
-    ev = st.dataframe(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key="watch_tbl",
+    ev = common.table(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key="watch_tbl",
                       column_config={"綜合分數": st.column_config.ProgressColumn(
                           "綜合分數", min_value=0, max_value=100, format="%d")})
     st.caption("點一列打開個股頁。綜合分數是全市場百分位；分數變化、提醒、新公布都是和上次 daily.py 執行時比。")
@@ -89,7 +89,7 @@ def _picks(got) -> None:
     cols = ["code", "name", "pick_score"] + [f"{k}_pct" for k in OL_NAME if f"{k}_pct" in tab.columns]
     show = tab[cols].rename(columns={"code": "代號", "name": "名稱", "pick_score": "平均百分位",
                                      **{f"{k}_pct": f"{v}百分位" for k, v in OL_NAME.items()}}).reset_index(drop=True)
-    ev = st.dataframe(common.styled(show, fmt={c: "{:.0f}" for c in show.columns if "百分位" in c}),
+    ev = common.table(common.styled(show, fmt={c: "{:.0f}" for c in show.columns if "百分位" in c}),
                       hide_index=True, on_select="rerun", selection_mode="single-row", key="picks_tbl")
     sel = ev.selection.rows if ev and ev.selection else []
     if sel:
@@ -118,7 +118,7 @@ def _season(ss, cur, ind) -> None:
         df["觀察"] = df["觀察"].map(lambda w: "★" if w else "")
     if "公布日" in df:
         df["公布日"] = pd.to_datetime(df["公布日"]).dt.strftime("%m/%d")
-    st.dataframe(common.styled(df, fmt={"營收年增%": "{:+.1f}", "毛利率%": "{:.1f}", "毛利率年增(點)": "{:+.1f}",
+    common.table(common.styled(df, fmt={"營收年增%": "{:+.1f}", "毛利率%": "{:.1f}", "毛利率年增(點)": "{:+.1f}",
                                         "毛利率名次(近20季)": "{:.0f}", "EPS": "{:.2f}", "去年同季EPS": "{:.2f}",
                                         "市值(億)": "{:,.0f}"},
                                 signed=["營收年增%", "毛利率年增(點)"]), hide_index=True)
@@ -126,7 +126,7 @@ def _season(ss, cur, ind) -> None:
         st.markdown("**依產業**")
         show = ind.reset_index()
         show.columns = ["產業", "已公布", "營收年增中位數%", "毛利率年增中位數(點)", "營收成長家數比例%"]
-        st.dataframe(common.styled(show, fmt={"營收年增中位數%": "{:+.1f}", "毛利率年增中位數(點)": "{:+.1f}",
+        common.table(common.styled(show, fmt={"營收年增中位數%": "{:+.1f}", "毛利率年增中位數(點)": "{:+.1f}",
                                               "營收成長家數比例%": "{:.0f}"},
                                    signed=["營收年增中位數%", "毛利率年增中位數(點)"]), hide_index=True)
 
@@ -213,8 +213,8 @@ if rows:
 else:
     common.empty("觀察名單是空的，到下方「編輯觀察名單」加入代號。")
 
-section = st.segmented_control("區塊", ["模型選股", "財報季", "多策略模擬", "編輯觀察名單"], default="模型選股",
-                               key="home_section", label_visibility="collapsed")
+section = common.segmented("區塊", ["模型選股", "財報季", "多策略模擬", "編輯觀察名單"], "模型選股",
+                           key="home_section", label_visibility="collapsed")
 if section == "模型選股":
     _picks(got)
 elif section == "財報季":

@@ -51,7 +51,8 @@ common.page_title("分析師問答", f"本機資料・{turns} 輪・本次對話
 status = common.load_status()
 default_asof = status.get("last_price_date") or date.today().isoformat()
 c1, c2, c3 = st.columns([2, 2, 1], vertical_alignment="bottom")
-label = c1.segmented_control("模型", list(CHOICES), default="Sonnet（預設）", key="analyst_model") or "Sonnet（預設）"
+with c1:
+    label = common.segmented("模型", list(CHOICES), "Sonnet（預設）", key="analyst_model")
 asof = c2.date_input("資料時點", value=date.fromisoformat(str(default_asof)),
                      max_value=date.fromisoformat(str(default_asof)))
 c3.button("新對話", on_click=_new_chat, icon=":material/add_comment:", width="stretch")

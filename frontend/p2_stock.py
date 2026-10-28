@@ -127,7 +127,7 @@ def _outlook(facts: dict, hist: pd.DataFrame):
                             + (f"，跑贏同業比例 {same['hit_pct']:.0f}%" if same.get("hit_pct") is not None else ""))
             if by:
                 df = pd.DataFrame({"標籤": list(by), "平均超額%": [v for v in by.values()]})
-                st.dataframe(common.styled(df, fmt={"平均超額%": "{:+.2f}"}, signed=["平均超額%"], labels=["標籤"]),
+                common.table(common.styled(df, fmt={"平均超額%": "{:+.2f}"}, signed=["平均超額%"], labels=["標籤"]),
                              hide_index=True)
     notes = [x for x in (ol.get("method"), ol.get("hit_pct_note")) if x]
     if notes:
@@ -169,7 +169,7 @@ def _technical(facts: dict):
                             "可靠度": x["reliability"] or "—",
                             "樣本外 20 日平均超額%": (x["history_oos"] or {}).get("mean_ex_pct"),
                             "勝率%": (x["history_oos"] or {}).get("hit_pct")} for x in pt["patterns"]])
-        st.dataframe(common.styled(df, fmt={"樣本外 20 日平均超額%": "{:+.2f}", "勝率%": "{:.0f}"},
+        common.table(common.styled(df, fmt={"樣本外 20 日平均超額%": "{:+.2f}", "勝率%": "{:.0f}"},
                                    signed=["樣本外 20 日平均超額%"]), hide_index=True)
         st.caption(pt["note"])
     elif pt:
@@ -221,7 +221,7 @@ def _scores(facts: dict, trend: pd.Series):
             df = pd.DataFrame([{"因子": v.get("desc"), "組別": v.get("group"), "數值": v.get("value"),
                                 "全市場百分位": None if v.get("pct_good") is None else v["pct_good"] * 100}
                                for v in fac.values()])
-            st.dataframe(df, hide_index=True, column_config={
+            common.table(df, hide_index=True, column_config={
                 "全市場百分位": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f")})
 
 
@@ -291,7 +291,7 @@ def _financials(facts: dict, fn: pd.DataFrame):
     show = show.drop(columns=["period"]).rename(columns={"avail_date": "公布日", "營業收入淨額": "營收(億)"})
     show["營收(億)"] = show["營收(億)"] / 1e5
     show["公布日"] = pd.to_datetime(show["公布日"]).dt.strftime("%Y-%m-%d")
-    st.dataframe(common.styled(show.iloc[::-1], fmt={c: "{:,.2f}" for c in show.columns if c not in ("季", "公布日")}),
+    common.table(common.styled(show.iloc[::-1], fmt={c: "{:,.2f}" for c in show.columns if c not in ("季", "公布日")}),
                  hide_index=True)
 
 
@@ -319,7 +319,7 @@ def _chips(facts: dict, ch: pd.DataFrame):
     if rows:
         df = pd.DataFrame(rows)
         num_cols = [c for c in df.columns if c.endswith("(張)")]
-        st.dataframe(common.styled(df, fmt={**{c: "{:+,.0f}" for c in num_cols}, "合計佔成交量%": "{:+.2f}"},
+        common.table(common.styled(df, fmt={**{c: "{:+,.0f}" for c in num_cols}, "合計佔成交量%": "{:+.2f}"},
                                    signed=num_cols + ["合計佔成交量%"]), hide_index=True)
 
 
@@ -366,7 +366,7 @@ def _actions(facts: dict):
     if not rows:
         common.empty("近期沒有除權息、減資或 ETF 分割。")
         return
-    st.dataframe(pd.DataFrame(rows).rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤",
+    common.table(pd.DataFrame(rows).rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤",
                                                     "ref": "參考價"}), hide_index=True)
 
 
@@ -393,7 +393,7 @@ def _peers(sig: str, code: str):
                             signed=["營收年增%", "近3月年增%"])
         sty = sty.apply(lambda r: ["font-weight: 700; background: rgba(59,130,246,.10)" if r["代號"] == code else ""
                                    for _ in r], axis=1)
-        st.dataframe(sty, hide_index=True, column_config={
+        common.table(sty, hide_index=True, column_config={
             "綜合分數": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d")})
     med = raw.get("median") or {}
     if med:
@@ -403,8 +403,8 @@ def _peers(sig: str, code: str):
 
 def _performance(sig: str, code: str, asof: date):
     c1, c2, c3 = st.columns([1, 1, 2])
-    preset = c3.segmented_control("快速區間", ["1 月", "3 月", "6 月", "1 年", "3 年", "今年"], default="1 年",
-                                  key="perf_preset")
+    with c3:
+        preset = common.segmented("快速區間", ["1 月", "3 月", "6 月", "1 年", "3 年", "今年"], "1 年", key="perf_preset")
     days = {"1 月": 30, "3 月": 91, "6 月": 182, "1 年": 365, "3 年": 1095}
     start0 = date(asof.year, 1, 1) if preset == "今年" else asof - timedelta(days=days.get(preset, 365))
     start = c1.date_input("起日", value=start0, key=f"perf_start_{preset}")
@@ -482,8 +482,7 @@ if isinstance(facts, dict) and facts.get("_error"):
     st.stop()
 
 _hero(facts, series.get("px"))
-section = st.segmented_control("區塊", SECTIONS, default="價格", key="stock_section", label_visibility="collapsed")
-section = section or "價格"
+section = common.segmented("區塊", SECTIONS, "價格", key="stock_section", label_visibility="collapsed")
 if section == "價格":
     _price(facts, series.get("px"))
 elif section == "短中長期":

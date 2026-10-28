@@ -103,6 +103,9 @@ def _score_table(sc: dict) -> None:
         v = sc.get(key)
         return "—" if v is None else f"{v * 100:.0f}%"
 
+    n_all, n_now = sc.get("n_all"), len(_trials())
+    tried = f"算的時候試過 {n_all} 個設定（現在 {n_now}）" if n_all is not None and n_all != n_now \
+        else f"試過 {n_all if n_all is not None else '—'} 個設定"
     common.kpis([
         ("期末資產", f"{sc['final']:,.0f}" if sc.get("final") is not None else "—", "元"),
         ("全期年化", common.signed_html(full.get("cagr")), f"Sharpe {common.plain(full.get('sharpe'), 2)}"),
@@ -110,7 +113,7 @@ def _score_table(sc: dict) -> None:
          f"同池 {common.pct((oos_b.get('pool') or {}).get('cagr'))}・0050 {common.pct((oos_b.get('etf') or {}).get('cagr'))}"),
         ("最大回落", common.pct(full.get("mdd")), f"{full.get('mdd_days', '—')} 個交易日沒回到高點"),
         ("成本 / 年", common.plain(sc.get("cost_per_year_pct"), 2, "%"), f"月換手 {common.pct(sc.get('turnover_month')).lstrip('+')}"),
-        ("Deflated Sharpe", _dsr("dsr"), f"試過 {sc.get('n_all', '—')} 個設定；檢定月 Sharpe > 0"),
+        ("Deflated Sharpe", _dsr("dsr"), f"{tried}；檢定月 Sharpe > 0"),
         ("對 0050 的 DSR", _dsr("dsr_excess"), "檢定月超額 Sharpe > 0"),
     ])
     rows = []
@@ -122,7 +125,7 @@ def _score_table(sc: dict) -> None:
                      "0050 年化": (block.get("etf") or {}).get("cagr"), "波動": s.get("vol"),
                      "Sharpe": s.get("sharpe"), "最大回落": s.get("mdd")})
     df = pd.DataFrame(rows)
-    st.dataframe(common.styled(df, fmt={"年化": "{:+.1%}", "同池年化": "{:+.1%}", "0050 年化": "{:+.1%}",
+    common.table(common.styled(df, fmt={"年化": "{:+.1%}", "同池年化": "{:+.1%}", "0050 年化": "{:+.1%}",
                                         "波動": "{:.1%}", "Sharpe": "{:.2f}", "最大回落": "{:.1%}"},
                                signed=["年化", "同池年化", "0050 年化"]), hide_index=True)
     st.caption(f"平均持股 {common.plain(sc.get('avg_hold'), 1)} 檔，平均現金 {common.pct(sc.get('avg_cash_pct')).lstrip('+')}，"
@@ -134,7 +137,7 @@ def _yearly(daily: pd.DataFrame) -> None:
     show = pd.DataFrame({"年": yr.index.astype(str), "策略": yr["strategy"].values, "同池": yr["pool"].values,
                          "0050": yr["etf"].values, "超額（對同池）": (yr["strategy"] - yr["pool"]).values}).iloc[::-1]
     cols = ["策略", "同池", "0050", "超額（對同池）"]
-    st.dataframe(common.styled(show, fmt={c: "{:+.1%}" for c in cols}, signed=cols), hide_index=True)
+    common.table(common.styled(show, fmt={c: "{:+.1%}" for c in cols}, signed=cols), hide_index=True)
 
 
 def _segments(daily: pd.DataFrame) -> None:
@@ -150,7 +153,7 @@ def _segments(daily: pd.DataFrame) -> None:
         common.empty("每一段都不足 12 個月。")
         return
     df = pd.DataFrame(rows)
-    st.dataframe(common.styled(df, fmt={"年化": "{:+.1%}", "0050 年化": "{:+.1%}", "超額 / 年": "{:+.1%}",
+    common.table(common.styled(df, fmt={"年化": "{:+.1%}", "0050 年化": "{:+.1%}", "超額 / 年": "{:+.1%}",
                                         "超額 t": "{:+.2f}", "α / 年": "{:+.1%}", "β": "{:.2f}", "α t": "{:+.2f}",
                                         "最大回落": "{:.1%}"},
                                signed=["年化", "0050 年化", "超額 / 年", "α / 年"]), hide_index=True)
@@ -201,7 +204,7 @@ _ROBUST_SIGNED = ["樣本外年化", "超額/年", "α/年", "年化", "0050 年
 def _show_robust_json(payload) -> None:
     def _table(rows: list) -> None:
         df = pd.DataFrame(rows)
-        st.dataframe(common.styled(df, fmt=_ROBUST_FMT, signed=_ROBUST_SIGNED), hide_index=True)
+        common.table(common.styled(df, fmt=_ROBUST_FMT, signed=_ROBUST_SIGNED), hide_index=True)
 
     if isinstance(payload, dict) and "variants" in payload:
         st.markdown("**變體**")
@@ -237,7 +240,7 @@ def _variant_rows(sig: str, base: dict) -> list[dict]:
 
 def _variant_table(rows: list[dict]) -> None:
     df = pd.DataFrame(rows)
-    st.dataframe(common.styled(df, fmt={"樣本外年化": "{:+.1%}", "0050": "{:+.1%}", "超額/年": "{:+.1%}",
+    common.table(common.styled(df, fmt={"樣本外年化": "{:+.1%}", "0050": "{:+.1%}", "超額/年": "{:+.1%}",
                                         "超額 t": "{:+.2f}", "α/年": "{:+.1%}", "β": "{:.2f}", "α t": "{:+.2f}",
                                         "最大回落": "{:.1%}", "成本/年": "{:.2%}"},
                                signed=["樣本外年化", "超額/年", "α/年"]), hide_index=True)
@@ -358,7 +361,7 @@ def _compare(sig: str, paths: list[Path], labels: dict) -> None:
                          "Sharpe": f.get("sharpe"), "最大回落": f.get("mdd"), "成本/年%": sc.get("cost_per_year_pct"),
                          "DSR": sc.get("dsr"), "對 0050 的 DSR": sc.get("dsr_excess")})
         st.markdown("**並排比較**")
-        st.dataframe(common.styled(pd.DataFrame(rows), fmt={"全期年化": "{:+.1%}", "樣本外年化": "{:+.1%}",
+        common.table(common.styled(pd.DataFrame(rows), fmt={"全期年化": "{:+.1%}", "樣本外年化": "{:+.1%}",
                                                             "Sharpe": "{:.2f}", "最大回落": "{:.1%}",
                                                             "成本/年%": "{:.2f}", "DSR": "{:.0%}",
                                                             "對 0050 的 DSR": "{:.0%}"},
@@ -414,11 +417,11 @@ def _trial_log() -> None:
                         "年化": r.get("cagr")} for r in rows]).iloc[::-1]
     srs = df["月 Sharpe"].dropna()
     common.kpis([
-        ("嘗試次數", f"{len(df)}", f"{df['代號'].nunique()} 個不同代號"),
+        ("嘗試次數", f"{len(df)}", f"同設定只記一次；有月 Sharpe 的 {len(srs)} 筆"),
         ("月 Sharpe 中位數", common.plain(srs.median(), 3), ""),
         ("月 Sharpe 最高", common.plain(srs.max(), 3), "挑最好的那個會高估實際表現"),
     ])
-    st.dataframe(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "超額 Sharpe": "{:.3f}", "年化": "{:+.1%}"},
+    common.table(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "超額 Sharpe": "{:.3f}", "年化": "{:+.1%}"},
                                signed=["年化"]), hide_index=True)
 
 
@@ -441,8 +444,8 @@ labels = {p: f"{c['name']}（{p.stem}）" for p, c in cfgs.items()}
 trials = _trials()
 common.page_title("策略", f"{len(paths)} 個設定檔・嘗試紀錄 {len(trials)} 筆")
 
-section = st.segmented_control("區塊", ["回測比較", "參數微調", "線上試跑", "嘗試紀錄", "策略清單", "現有報告"],
-                               default="回測比較", key="strat_section", label_visibility="collapsed") or "回測比較"
+section = common.segmented("區塊", ["回測比較", "參數微調", "線上試跑", "嘗試紀錄", "策略清單", "現有報告"],
+                           "回測比較", key="strat_section", label_visibility="collapsed")
 if section == "回測比較":
     _compare(sig, paths, labels)
 elif section == "參數微調":
@@ -452,7 +455,7 @@ elif section == "線上試跑":
 elif section == "嘗試紀錄":
     _trial_log()
 elif section == "策略清單":
-    st.dataframe(pd.DataFrame([{
+    common.table(pd.DataFrame([{
         "代號": p.stem, "名稱": c["name"], "說明": c.get("description") or "", "持股": c["select"]["n"],
         "排序": c["select"]["sort"], "權重": c["position"]["weighting"],
         "大盤濾網": c["risk"]["regime"] if c["risk"]["regime"] != "none" else "",

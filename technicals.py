@@ -8,6 +8,9 @@
   uv run technicals.py                 # 個股訊號 + 大盤多空
   uv run technicals.py --part stocks   # 只跑個股訊號
   uv run technicals.py --part market   # 只跑大盤多空
+  uv run technicals.py --part latest   # 只存最新一天的個股訊號值（不回測，給 update.py 用）
+
+跑 all / stocks / latest 都會把最新資料日的訊號值存到 data/technicals_latest.parquet（每檔一列），給事實表引用。
 
 個股訊號（仿 Trading Central 的事件，分三類）:
   state  每天都有值的多空狀態（+1 多 / −1 空），例：收盤在 50 日均線之上
@@ -228,10 +231,24 @@ def industry_excess(fwd: pd.DataFrame, ind: pd.Series) -> pd.DataFrame:
     return (t - t.groupby(ind.reindex(t.index).values).transform("mean")).T
 
 
+def save_latest(s: dict[str, pd.DataFrame], uni: pd.DataFrame, w: dict) -> pd.DataFrame:
+    """最新資料日（s 的最後一列）各訊號的值；只留當天有成交的股票。"""
+    last = next(iter(s.values())).index[-1]
+    d = pd.DataFrame({name: x.loc[last] for name, x in s.items()})
+    d = d[w["close"].loc[last].reindex(d.index).notna()]
+    d.insert(0, "in_universe", uni.loc[last].reindex(d.index).fillna(False))
+    d.insert(0, "date", last)
+    d = d.rename_axis("code").reset_index()
+    d.to_parquet(OUT / "technicals_latest.parquet", index=False)
+    return d
+
+
 def run_stocks(w: dict, uni: pd.DataFrame):
     idx = w["adj_close"].index
     sample = idx[(idx >= "2011-01-01")][::STEP]
-    s = signals(w, sample)
+    s = signals(w, sample.union(idx[-1:]))
+    save_latest(s, uni, w)
+    s = {k: v.loc[sample] for k, v in s.items()}
     ind = industries(w["adj_close"].columns)
     u = uni.loc[sample]
 
@@ -361,10 +378,14 @@ def run_market(w: dict, uni: pd.DataFrame, s: dict | None):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", choices=["all", "stocks", "market"], default="all")
+    ap.add_argument("--part", choices=["all", "stocks", "market", "latest"], default="all")
     a = ap.parse_args()
     w = load()
     uni = universe(w)
+    if a.part == "latest":
+        d = save_latest(signals(w, w["adj_close"].index[-1:]), uni, w)
+        print(f"technicals_latest.parquet：{d['date'].iloc[0]:%Y-%m-%d}，{len(d)} 檔（股票池內 {d['in_universe'].sum()}）")
+        return
     s = run_stocks(w, uni) if a.part in ("all", "stocks") else None
     if a.part in ("all", "market"):
         run_market(w, uni, s)

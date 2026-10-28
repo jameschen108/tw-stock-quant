@@ -314,7 +314,7 @@ def events_section(code: str, asof: pd.Timestamp) -> list:
             for r in ev.itertuples()]
 
 
-def build_facts(code: str, asof: pd.Timestamp) -> tuple[dict, dict]:
+def build_facts(code: str, asof: pd.Timestamp, hit_by_label: bool = False) -> tuple[dict, dict]:
     price, px = price_section(code, asof)
     rev, rv = revenue_section(code, asof)
     fin, fn = fin_section(code, asof)
@@ -337,7 +337,7 @@ def build_facts(code: str, asof: pd.Timestamp) -> tuple[dict, dict]:
                          "估值請用 valuation 的 pe_ttm、pb（以市值計算）")
     facts = {"code": code, "asof": price["date"], "price": price, "revenue": rev, "financials": fin,
              "scores": score, "institutional_flows": chips,
-             "margin_foreign_holding": credit, "outlook": stock_outlook(code, asof), "announcements": ann,
+             "margin_foreign_holding": credit, "outlook": stock_outlook(code, asof, hit_by_label),"announcements": ann,
              "corporate_actions": actions, "notes": notes}
     return facts, {"px": px, "rv": rv, "fn": fn, "trend": trend, "chips": ch, "ann": an}
 
@@ -380,7 +380,7 @@ SYSTEM = """你是台股研究助理，替一位個人投資者整理單一個�
 - outlook 是模型依歷史統計給的短 / 中 / 長期標籤。outlook 欄位 2~4 句：依序寫三個期間的標籤（例如「短期模型標籤：看漲」），
   每個附上持有期與樣本外歷史：同標籤平均產業中性超額、和中性組比較；可靠度是「弱」或「不可靠」的要明說。
   若某期間看漲組的歷史平均超額和中性組差不到 0.5 個百分點，要說明這個看漲標籤的區分力有限（主要是看跌有區分力）。
-  勝率要和其他標籤比較，不能單獨說成「勝率不到一半所以不好」。這是模型的統計分組，不要寫成你自己的看法或保證。
+  勝率要用 hit_pct_by_label_oos 和其他標籤比較，不能單獨說成「勝率不到一半所以不好」。這是模型的統計分組，不要寫成你自己的看法或保證。
 
 summary 3~4 句；positives、negatives 各 2~4 點；watch_items 2~3 點，寫成下次財報或月營收可以檢查的具體項目。用繁體中文。"""
 
@@ -794,7 +794,7 @@ def main():
 
     if not a.asof and (w := freshness_warning()):
         print(f"⚠ {w}")
-    facts, series = build_facts(a.code, asof)
+    facts, series = build_facts(a.code, asof, hit_by_label=True)
     narrative = None if a.no_llm else llm_narrative(facts)
     if narrative:
         facts["narrative"] = narrative

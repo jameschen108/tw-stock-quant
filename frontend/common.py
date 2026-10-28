@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import analyst
+import custom
 import daily
 import outlook
 import paper
@@ -41,15 +42,21 @@ CSS = """
 [data-testid="stBottomBlockContainer"] {max-width: 1440px; margin: 0 auto;}
 h1, h2, h3 {letter-spacing: .01em;}
 div[data-testid="stMetricValue"] {font-size: 1.45rem;}
-.sbar {display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; font-size:.8rem; margin:0;}
-[data-testid="stHorizontalBlock"]:has(.sbar) {align-items:center; margin-bottom:.15rem;}
-[data-testid="stHorizontalBlock"]:has(.sbar) [data-testid="stButton"] button {
+.sbar {display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; font-size:.78rem; margin:0; opacity:.75;}
+.sbar b {font-weight:600;}
+.sbar i {font-style:normal; opacity:.45;}
+.sbar + .disc {margin:.1rem 0 0;}
+[data-testid="stHorizontalBlock"]:has(.sbar) {align-items:center; margin-bottom:.4rem;}
+.fresh {padding:.4rem .8rem; border-radius:.5rem; font-size:.85rem; background:rgba(234,179,8,.12);
+        border:1px solid rgba(234,179,8,.45);}
+[data-testid="stHorizontalBlock"]:has(.fresh) {align-items:center; margin-bottom:.4rem;}
+[data-testid="stHorizontalBlock"]:has(.sbar) [data-testid="stButton"] button,
+[data-testid="stHorizontalBlock"]:has(.fresh) [data-testid="stButton"] button {
   border: 1px solid rgba(128,128,128,.22); background: transparent; min-height: 1.7rem;
-  padding: .05rem .7rem; font-size: .8rem; border-radius: 999px;}
+  padding: .05rem .7rem; font-size: .8rem; border-radius: 999px; white-space: nowrap;}
 .chip {padding:.12rem .6rem; border-radius:999px; background:rgba(128,128,128,.10);
        border:1px solid rgba(128,128,128,.22); white-space:nowrap;}
 .chip b {font-weight:600;}
-.chip.ok {border-color:rgba(24,160,88,.55);}
 .chip.warn {background:rgba(234,179,8,.14); border-color:rgba(234,179,8,.55);}
 .chip.bad {background:rgba(229,72,77,.14); border-color:rgba(229,72,77,.55);}
 .disc {font-size:.76rem; opacity:.62; margin:.15rem 0 .6rem;}
@@ -57,11 +64,12 @@ div[data-testid="stMetricValue"] {font-size: 1.45rem;}
 .ptitle h1 {font-size:1.9rem; margin:0; padding:0;}
 .ptitle .sub {opacity:.65; font-size:.9rem;}
 .kgrid {display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:.7rem; margin:.3rem 0 1rem;}
+@media (min-width: 1200px) {.kgrid {grid-template-columns:repeat(var(--cols, 6), minmax(0, 1fr));}}
 .kpi {border:1px solid rgba(128,128,128,.22); border-radius:.8rem; padding:.7rem .95rem; background:rgba(128,128,128,.05);}
 .kpi .t {font-size:.78rem; opacity:.68;}
 .kpi .v {font-size:1.5rem; font-weight:650; line-height:1.35; font-variant-numeric:tabular-nums;}
 .kpi .s {font-size:.76rem; opacity:.62;}
-.kpi.accent {border-color:rgba(229,72,77,.5); background:rgba(229,72,77,.06);}
+.kpi.accent {border-color:rgba(59,130,246,.5); background:rgba(59,130,246,.06);}  /* 紅綠留給漲跌 */
 .badge {display:inline-block; padding:.05rem .5rem; border-radius:.4rem; font-size:.78rem; font-weight:600;
         margin:0 .25rem .2rem 0; white-space:nowrap;}
 .badge.bull {background:rgba(229,72,77,.15); color:#e5484d;}
@@ -121,6 +129,21 @@ def page_title(title: str, sub: str = "") -> None:
                 unsafe_allow_html=True)
 
 
+def segmented(label: str, options: list[str], default: str, key: str, **kw) -> str:
+    """單選的 segmented_control。原生的再點一次已選的會變成 None，這裡改回上一個選項。"""
+    last = f"_{key}_last"
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = st.session_state.get(last) if st.session_state.get(last) in options else default
+
+    def keep():
+        if st.session_state.get(key) is None:
+            st.session_state[key] = st.session_state.get(last, default)
+        st.session_state[last] = st.session_state[key]
+
+    st.session_state.setdefault(last, st.session_state[key])
+    return st.segmented_control(label, options, key=key, on_change=keep, **kw) or default
+
+
 def kpis(items: list[tuple], ) -> None:
     """items: (標題, 值 HTML, 小字, accent?)。值已經是 HTML，呼叫端負責 escape。"""
     cells = []
@@ -129,7 +152,14 @@ def kpis(items: list[tuple], ) -> None:
         acc = " accent" if len(it) > 3 and it[3] else ""
         cells.append(f'<div class="kpi{acc}"><div class="t">{esc(t)}</div><div class="v">{v}</div>'
                      f'<div class="s">{esc(s)}</div></div>')
-    st.markdown(f'<div class="kgrid">{"".join(cells)}</div>', unsafe_allow_html=True)
+    # 寬螢幕一列最多 7 張，張數多時平均分列（8 張排 4+4，不要 7+1）
+    cols = len(cells) if len(cells) <= 7 else math.ceil(len(cells) / math.ceil(len(cells) / 7))
+    st.markdown(f'<div class="kgrid" style="--cols:{max(cols, 1)}">{"".join(cells)}</div>', unsafe_allow_html=True)
+
+
+def table(data, **kw):
+    """st.dataframe，缺值顯示「—」。原生預設顯示 None，Styler 的 na_rep 管不到。"""
+    return st.dataframe(data, placeholder="—", **kw)
 
 
 def empty(msg: str) -> None:
@@ -190,6 +220,10 @@ def _run_job(title: str, args: list[str]) -> None:
                 box.update(label=f"{title} 結束碼 {code}", state="error")
 
 
+def _open_jobs() -> None:
+    st.session_state.jobs_open = True
+
+
 def _close_jobs() -> None:
     st.session_state.jobs_open = False
 
@@ -221,36 +255,35 @@ def header() -> None:
         v = stt.get(k)
         return "—" if v is None else f"{v * 100:.1f}%"
 
-    chips = [
-        f'<span class="chip"><b>價格</b> {esc(stt.get("last_price_date") or "—")}</span>',
-        f'<span class="chip"><b>因子</b> {esc(stt.get("factor_date") or "—")}</span>',
-        f'<span class="chip"><b>更新</b> {esc(run_at)}</span>',
-        f'<span class="chip"><b>營收新鮮度</b> {share("rev_fresh_share")}</span>',
-        f'<span class="chip"><b>財報新鮮度</b> {share("fin_fresh_share")}</span>',
-    ]
+    items = [f'<b>價格</b> {esc(stt.get("last_price_date") or "—")}',
+             f'<b>因子</b> {esc(stt.get("factor_date") or "—")}',
+             f'<b>更新</b> {esc(run_at)}',
+             f'<b>營收</b> {share("rev_fresh_share")}',
+             f'<b>財報</b> {share("fin_fresh_share")}']
+    # 正常時只有一行小字；有狀況才加標籤
     if ok is None:
-        chips.append('<span class="chip warn">沒有更新紀錄</span>')
-    elif ok and not problems:
-        chips.append('<span class="chip ok">更新正常</span>')
-    else:
-        chips.append(f'<span class="chip bad">更新有問題{f"（{len(problems)}）" if problems else ""}</span>')
+        items.append('<span class="chip warn">沒有更新紀錄</span>')
+    elif problems or not ok:
+        items.append(f'<span class="chip bad">更新有問題{f"（{len(problems)}）" if problems else ""}</span>')
+    last = stt.get("last_price_date") or ""
     for d, why in sorted(update.CLOSED.items()):
-        chips.append(f'<span class="chip">休市 {esc(d[5:])} {esc(why)}</span>')
-    fresh = report.freshness_warning()
-    if fresh:
-        chips.append('<span class="chip warn">資料可能過舊</span>')
-    bar, act = st.columns([1, 0.08], gap="small", vertical_alignment="center")
-    bar.markdown(f'<div class="sbar">{"".join(chips)}</div>', unsafe_allow_html=True)
-    with act:
-        if st.button("執行", type="tertiary", key="open_jobs_btn", help="更新資料或重算。只在這個視窗裡跑固定指令"):
-            st.session_state.jobs_open = True
-    st.markdown(f'<div class="disc">{DISCLAIMER}</div>', unsafe_allow_html=True)
+        if d > last:  # 價格日之後的休市才解釋得了為什麼沒有新行情
+            items.append(f'<span class="chip">休市 {esc(d[5:])} {esc(why)}</span>')
+    bar, act = st.columns([1, 0.16], gap="small", vertical_alignment="center")
+    bar.markdown(f'<div class="sbar">{"<i>·</i>".join(items)}</div>'
+                 f'<div class="disc">{DISCLAIMER}</div>', unsafe_allow_html=True)
+    act.button("更新 / 重算", type="tertiary", key="open_jobs_btn", on_click=_open_jobs, width="stretch",
+               help="更新資料或重算。只在這個視窗裡跑固定指令")
     if st.session_state.get("jobs_open"):
         _jobs_dialog()
     if problems or ok is False:
         st.error("更新問題：" + ("；".join(problems) if problems else "fetch_ok 為 false"))
+    fresh = report.freshness_warning()
     if fresh:
-        st.warning(fresh)
+        msg, btn = st.columns([1, 0.16], gap="small", vertical_alignment="center")
+        msg.markdown(f'<div class="fresh">{esc(fresh.removesuffix("。分析前建議先跑 uv run update.py"))}。</div>',
+                     unsafe_allow_html=True)
+        btn.button("更新資料", key="fresh_update_btn", on_click=_open_jobs, width="stretch")
 
 
 # ---------------------------------------------------------------- 格式
@@ -424,6 +457,9 @@ def fig_layout(fig, title: str = "", height: int = 340, legend: bool = True):
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1) if legend else None,
         showlegend=legend, hovermode="x unified",
     )
+    # 滑鼠提示的數字跟座標軸一樣格式化，不然會出現 2.256441 這種
+    fig.for_each_yaxis(lambda ax: ax.update(hoverformat=".1%" if (ax.tickformat or "").endswith("%") else ",.3~f")
+                       if ax.hoverformat is None else None)
     return fig
 
 
@@ -444,3 +480,41 @@ def chart(fig) -> None:
 
 def preview_html(path: Path) -> None:
     st.iframe(path, height=760)
+
+
+# ---------------------------------------------------------------- 回測結果
+
+NAV_COLOR = {"自選（扣成本）": C_STRAT, "自選（不扣成本）": C_POOL,
+             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF}
+
+
+def weight_table(weights: pd.Series) -> None:
+    names = custom.names_of(list(weights.index))
+    df = pd.DataFrame({"代號": list(weights.index), "名稱": [names.get(c, "") for c in weights.index],
+                       "目標權重": weights.values})
+    table(styled(df, fmt={"目標權重": "{:.1%}"}), hide_index=True)
+
+
+def cmp_table(daily: pd.DataFrame, perf: dict, labels: list[tuple[str, str]]) -> None:
+    rows = []
+    for key, label in labels:
+        p = perf.get(key) or {}
+        rows.append({"組合": label, "總報酬": (1 + daily[key]).prod() - 1, "年化": p.get("cagr"),
+                     "波動": p.get("vol"), "Sharpe": p.get("sharpe"), "最大回落": p.get("mdd")})
+    df = pd.DataFrame(rows)
+    table(styled(df, fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}", "Sharpe": "{:.2f}",
+                          "最大回落": "{:.1%}"}, signed=["總報酬", "年化"]), hide_index=True)
+
+
+def nav_chart(daily: pd.DataFrame, labels: list[tuple[str, str]], title: str, height: int = 380) -> None:
+    nav = (1 + daily).cumprod()
+    named = {label: nav[key] for key, label in labels}
+    chart(line_fig(nav.index, named, title, {k: NAV_COLOR[k] for k in named}, height))
+
+
+def cost_line(res: dict) -> str:
+    t = res["trades"]
+    blocked = [f"{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}" for _, r in t.iterrows() if r["blocked"]]
+    line = (f"期末資產 {res['nav'].iloc[-1]:,.0f} 元・手續費 {t['fees'].sum():,.0f}・證交稅 {t['tax'].sum():,.0f}・"
+            f"成交 {len(t)} 次")
+    return line + ("・" + "；".join(blocked) if blocked else "")

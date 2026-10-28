@@ -36,12 +36,11 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 | 功能 | 來源 |
 |---|---|
-| 觀察名單表：收盤、1 日 / 5 日報酬、短中長期標籤、綜合分數百分位與變化、外資持股、融資、法人 | `daily.watch_rows(codes, prev, first_run)`；名單用 `daily.read_watchlist()`，上次狀態在 `data/daily_state.json` |
+| 觀察名單表：收盤、1 日 / 5 日報酬、短中長期標籤、綜合分數百分位與變化、外資 / 融資 / 法人的 5 日變化 | `daily.watch_rows(codes, prev, first_run)`；名單用 `daily.read_watchlist()`，上次狀態在 `data/daily_state.json` |
 | 提醒（漲跌超過 7%、綜合分數變化 15 分以上、外資 5 日變化 1 點以上、融資 5 日變化 15% 以上、標籤改變）與新公布 | 同上，每列的 `alerts`、`events` |
 | 編輯觀察名單 | 讀寫 `watchlist.txt`（一行一個代號）。這是唯一允許前端寫入的設定檔 |
 | 模型選股清單（短中長期都看漲） | `daily.model_picks()` → `(calib, DataFrame)` |
 | 財報季速覽：已公布家數、各家營收 / 毛利率 / EPS 名次、依產業彙總 | `daily.season_rows(watch)` → `(ss, cur, ind)` |
-| 多策略模擬摘要（見頁 4） | `paper.load_strategy_summaries()` |
 
 注意：`daily.watch_rows` 會算出新的狀態，但只有 `daily.py` 正式執行時才寫回 `daily_state.json`。前端只讀不寫，否則「與上次比」會被前端打開的次數攪亂。
 
@@ -65,6 +64,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 區間報酬 | `analyst.price_performance(code, start, end)`（回傳 JSON 字串） |
 | 產生 LLM 報告（按鈕） | `report.llm_narrative(facts)` → dict；HTML 用 `report.render(facts, series, narrative)`。Haiku，每份約 1 美分以內 |
 | 既有報告 | `reports/{code}_{asof}.html` / `.json` |
+| 加入 / 移出觀察名單（代號旁的按鈕） | 改 `watchlist.txt`，和總覽「編輯觀察名單」同一個檔；保留其他行和註解 |
 
 ## 頁 3：策略
 
@@ -78,7 +78,8 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 參數微調結果（每個策略 9–12 個變體） | `robust.variants(cfg)` 加 `simulate`，或讀後端快取 |
 | 嘗試紀錄（試過幾個設定、各自的 Sharpe） | `data/strategy/trials.jsonl`，一行一筆 JSON |
 | 線上試跑：在頁面上改參數後回測 | 組出 cfg dict 後呼叫 `simulate`；記錄用 `strategy.log_trial(cfg, res)`，每次試跑都要記 |
-| 現有報告 | `reports/strategy_*.html`、`reports/robust*.html` |
+| 現有報告（回測比較底下的折疊區塊） | `reports/strategy_*.html`、`reports/robust*.html` |
+| 自選股回測（輸入代號、權重、起訖日、本金、買進持有或每月調回；按了才算） | `custom.run()`：回傳 nav、daily（strategy、pool、etf）、perf、trades、missing、weights；不寫檔 |
 
 設定欄位說明在 `strategy.py` 檔頭的 docstring。主要有：
 
@@ -98,7 +99,6 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 多策略：起點、期數、目標曝險、大盤濾網狀態（距均線多少 %）、累積報酬、0050、同池、最大回落、現金、出場次數 | `paper.load_strategy_summaries()`（讀 `data/paper/strat_summary.json`） |
 | 各策略目前持股（市值、權重）或本期目標權重 | 同上，`holdings` / `targets` |
 | 每期紀錄（訊號日、選了哪些、權重） | `data/paper/strat_ledger.parquet`：signal_date、strategy、hash、code、weight、in_pick、pick_order、regime_on |
-| 自選股回測（輸入代號、權重、起訖日、本金、買進持有或每月調回；按了才算） | `custom.run()`：回傳 nav、daily（strategy、pool、etf）、perf、trades、missing、weights；不寫檔 |
 | 自選組合（建立、改持股、封存；淨值對同組等權與 0050） | `mine.py`：紀錄 `data/paper/mine_ledger.parquet`（只追加）、設定 `mine_meta.json`；`mine.replay(name)` 每次現算淨值，還沒進場回傳 None。`LLM篩選-<model>`、`量化全買`、`隨機對照-<model>` 是實驗帳本，只能看，不能改、不能封存 |
 | LLM 決策（三組淨值加 0050、比較表、選股檢定、準前瞻回放、決策紀錄） | 只讀 `data/paper/llm_decisions.jsonl` 與 `llm_replay.jsonl`。選股檢定用 `llm_trader.selection_test`，回放結果用 `llm_replay.evaluate`（各自快取）。三組淨值用 `mine.replay`。點決策列看理由與風險，再打開個股頁。不從前端呼叫 API |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |

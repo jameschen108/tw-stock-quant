@@ -13,11 +13,11 @@ _HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(_HERE), str(_HERE.parent)]
 
 import common
+import daily
 import report
 
 HAIKU = "claude-haiku-5-5"
-SECTIONS = ["價格", "短中長期", "技術面", "綜合分數", "月營收", "季財報", "法人", "融資與外資", "重大訊息", "除權息",
-            "同業", "區間報酬", "報告"]
+SECTIONS = ["價格", "模型看法", "訊號與形態", "營收財報", "籌碼", "重大訊息", "同業", "報告"]
 
 
 # ---------------------------------------------------------------- 選股
@@ -29,6 +29,19 @@ def _labels(sig: str) -> tuple[list[str], dict[str, str]]:
     return labels, {lab.split()[0]: lab for lab in labels}
 
 
+def _toggle_watch(code: str, name: str) -> None:
+    """加入或移出 watchlist.txt（前端唯一會寫的設定檔），保留其他行和註解。"""
+    path = daily.WATCHLIST
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    if code in daily.read_watchlist():
+        lines = [ln for ln in lines if ln.split("#")[0].strip() != code]
+        st.toast(f"已把 {code} {name} 移出觀察名單", icon=":material/check:")
+    else:
+        lines.append(f"{code}  # {name}" if name else code)
+        st.toast(f"已把 {code} {name} 加入觀察名單", icon=":material/check:")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _picker(sig: str, default_asof: str):
     labels, by_code = _labels(sig)
     goto = st.session_state.pop("goto_code", None)
@@ -37,11 +50,15 @@ def _picker(sig: str, default_asof: str):
     elif "stock_pick" not in st.session_state:
         q = st.query_params.get("code")
         st.session_state["stock_pick"] = by_code.get(q) or by_code.get("2330") or labels[0]
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([3, 1, 0.7], vertical_alignment="bottom")
     chosen = c1.selectbox("股票（打代號或名稱篩選）", labels, key="stock_pick")
     asof = c2.date_input("資料時點", value=date.fromisoformat(default_asof), max_value=date.fromisoformat(default_asof),
                          help="選過去的日期做時點回溯：只用當時已公布的資料")
     code = chosen.split()[0]
+    name = chosen[len(code):].replace("（近 10 天無交易）", "").strip()
+    watched = code in daily.read_watchlist()
+    c3.button("移出觀察" if watched else "加入觀察", icon=":material/star:" if watched else ":material/star_border:",
+              on_click=_toggle_watch, args=(code, name), width="stretch", key="watch_toggle")
     if st.query_params.get("code") != code:
         st.query_params["code"] = code
     return code, asof
@@ -83,16 +100,17 @@ def _hero(facts: dict, px: pd.DataFrame) -> None:
 def _price(facts: dict, px: pd.DataFrame):
     p = facts.get("price") or {}
     common.kpis([
-        ("近 1 月", common.signed_html(p.get("ret_1m")), "含息"),
-        ("近 3 月", common.signed_html(p.get("ret_3m")), "含息"),
-        ("近 6 月", common.signed_html(p.get("ret_6m")), "含息"),
-        ("近 12 月", common.signed_html(p.get("ret_12m")), "含息"),
+        ("近 1 月", common.signed_html(p.get("ret_1m")), ""),
+        ("近 3 月", common.signed_html(p.get("ret_3m")), ""),
+        ("近 6 月", common.signed_html(p.get("ret_6m")), ""),
+        ("近 12 月", common.signed_html(p.get("ret_12m")), ""),
         ("距 52 週高點", common.signed_html(p.get("from_52w_high")), ""),
         ("相對 200 日均線", common.signed_html(p.get("ma200_gap")), ""),
         ("60 日年化波動", common.pct(p.get("vol_60d_ann")).lstrip("+"), ""),
         ("近 1 年最大回落", common.pct(p.get("max_drawdown_1y")), ""),
         ("20 日均成交值", common.num(p.get("avg_value_20d_億")) + " 億", ""),
     ])
+    st.caption("報酬都含息（用調整後價格）。")
     if px is None or px.empty:
         return
     s = px.set_index("date")["adj_close"]
@@ -127,7 +145,7 @@ def _outlook(facts: dict, hist: pd.DataFrame):
                             + (f"，跑贏同業比例 {same['hit_pct']:.0f}%" if same.get("hit_pct") is not None else ""))
             if by:
                 df = pd.DataFrame({"標籤": list(by), "平均超額%": [v for v in by.values()]})
-                st.dataframe(common.styled(df, fmt={"平均超額%": "{:+.2f}"}, signed=["平均超額%"], labels=["標籤"]),
+                common.table(common.styled(df, fmt={"平均超額%": "{:+.2f}"}, signed=["平均超額%"], labels=["標籤"]),
                              hide_index=True)
     notes = [x for x in (ol.get("method"), ol.get("hit_pct_note")) if x]
     if notes:
@@ -169,7 +187,7 @@ def _technical(facts: dict):
                             "可靠度": x["reliability"] or "—",
                             "樣本外 20 日平均超額%": (x["history_oos"] or {}).get("mean_ex_pct"),
                             "勝率%": (x["history_oos"] or {}).get("hit_pct")} for x in pt["patterns"]])
-        st.dataframe(common.styled(df, fmt={"樣本外 20 日平均超額%": "{:+.2f}", "勝率%": "{:.0f}"},
+        common.table(common.styled(df, fmt={"樣本外 20 日平均超額%": "{:+.2f}", "勝率%": "{:.0f}"},
                                    signed=["樣本外 20 日平均超額%"]), hide_index=True)
         st.caption(pt["note"])
     elif pt:
@@ -221,7 +239,7 @@ def _scores(facts: dict, trend: pd.Series):
             df = pd.DataFrame([{"因子": v.get("desc"), "組別": v.get("group"), "數值": v.get("value"),
                                 "全市場百分位": None if v.get("pct_good") is None else v["pct_good"] * 100}
                                for v in fac.values()])
-            st.dataframe(df, hide_index=True, column_config={
+            common.table(df, hide_index=True, column_config={
                 "全市場百分位": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f")})
 
 
@@ -291,7 +309,7 @@ def _financials(facts: dict, fn: pd.DataFrame):
     show = show.drop(columns=["period"]).rename(columns={"avail_date": "公布日", "營業收入淨額": "營收(億)"})
     show["營收(億)"] = show["營收(億)"] / 1e5
     show["公布日"] = pd.to_datetime(show["公布日"]).dt.strftime("%Y-%m-%d")
-    st.dataframe(common.styled(show.iloc[::-1], fmt={c: "{:,.2f}" for c in show.columns if c not in ("季", "公布日")}),
+    common.table(common.styled(show.iloc[::-1], fmt={c: "{:,.2f}" for c in show.columns if c not in ("季", "公布日")}),
                  hide_index=True)
 
 
@@ -319,7 +337,7 @@ def _chips(facts: dict, ch: pd.DataFrame):
     if rows:
         df = pd.DataFrame(rows)
         num_cols = [c for c in df.columns if c.endswith("(張)")]
-        st.dataframe(common.styled(df, fmt={**{c: "{:+,.0f}" for c in num_cols}, "合計佔成交量%": "{:+.2f}"},
+        common.table(common.styled(df, fmt={**{c: "{:+,.0f}" for c in num_cols}, "合計佔成交量%": "{:+.2f}"},
                                    signed=num_cols + ["合計佔成交量%"]), hide_index=True)
 
 
@@ -364,10 +382,11 @@ def _announcements(facts: dict):
 def _actions(facts: dict):
     rows = facts.get("corporate_actions") or []
     if not rows:
-        common.empty("近期沒有除權息、減資或 ETF 分割。")
+        st.caption("近期沒有除權息、減資或 ETF 分割。")
         return
-    st.dataframe(pd.DataFrame(rows).rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤",
-                                                    "ref": "參考價"}), hide_index=True)
+    df = pd.DataFrame(rows).sort_values("date", ascending=False)
+    common.table(df.rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤", "ref": "參考價"}),
+                 hide_index=True)
 
 
 def _peers(sig: str, code: str):
@@ -377,10 +396,12 @@ def _peers(sig: str, code: str):
         common.empty(raw["error"])
         return
     n_peers = raw.get("n_peers")
-    tags = common.badge(raw.get("peer_level") or "", "muted") + (common.badge(f"{n_peers} 家", "muted") if n_peers else "")
+    level = raw.get("peer_level") or ""
+    tags = common.badge(f"同 TEJ {level} {raw.get('industry_code') or ''}".strip() if level else "", "muted") \
+        + (common.badge(f"{n_peers} 家", "muted") if n_peers else "")
     st.markdown(f"**{common.esc(raw.get('industry_name') or '')}**　{tags}", unsafe_allow_html=True)
     rows = raw.get("rows") or []
-    rename = {"code": "代號", "name": "名稱", "產業名稱": "產業", "mcap_億": "市值(億)", "close": "收盤",
+    rename = {"code": "代號", "name": "名稱", "產業名稱": "主產業", "mcap_億": "市值(億)", "close": "收盤",
               "rev_yoy": "營收年增%", "rev_yoy_3m": "近3月年增%", "gross_margin": "毛利率%", "roe": "ROE%",
               "pe": "本益比", "pb": "股價淨值比", "composite_pct": "綜合分數"}
     if rows:
@@ -393,8 +414,16 @@ def _peers(sig: str, code: str):
                             signed=["營收年增%", "近3月年增%"])
         sty = sty.apply(lambda r: ["font-weight: 700; background: rgba(59,130,246,.10)" if r["代號"] == code else ""
                                    for _ in r], axis=1)
-        st.dataframe(sty, hide_index=True, column_config={
-            "綜合分數": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d")})
+        # key 帶代號：換股後是新的表，不會沿用上一檔的選取又跳走
+        ev = common.table(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key=f"peers_{code}",
+                          column_config={"綜合分數": st.column_config.ProgressColumn(min_value=0, max_value=100,
+                                                                                  format="%d")})
+        sel = ev.selection.rows if ev and ev.selection else []
+        if sel and str(show.iloc[sel[0]]["代號"]) != code:
+            common.goto_stock(str(show.iloc[sel[0]]["代號"]))
+        mixed = show["主產業"].nunique() > 1 if "主產業" in show else False
+        st.caption("點一列打開那檔個股。" + ("同業依 TEJ 子產業分組，主產業不同的公司也可能在同一組。" if mixed and
+                                       level == "子產業" else ""))
     med = raw.get("median") or {}
     if med:
         st.caption("同業中位數：" + "、".join(f"{rename.get(k, k)} {common.plain(v, 1)}"
@@ -403,8 +432,8 @@ def _peers(sig: str, code: str):
 
 def _performance(sig: str, code: str, asof: date):
     c1, c2, c3 = st.columns([1, 1, 2])
-    preset = c3.segmented_control("快速區間", ["1 月", "3 月", "6 月", "1 年", "3 年", "今年"], default="1 年",
-                                  key="perf_preset")
+    with c3:
+        preset = common.segmented("快速區間", ["1 月", "3 月", "6 月", "1 年", "3 年", "今年"], "1 年", key="perf_preset")
     days = {"1 月": 30, "3 月": 91, "6 月": 182, "1 年": 365, "3 年": 1095}
     start0 = date(asof.year, 1, 1) if preset == "今年" else asof - timedelta(days=days.get(preset, 365))
     start = c1.date_input("起日", value=start0, key=f"perf_start_{preset}")
@@ -427,11 +456,17 @@ def _performance(sig: str, code: str, asof: date):
 
 def _reports(code: str, facts: dict, series: dict):
     est = common.estimate_usd(HAIKU, len(json.dumps(facts, ensure_ascii=False, default=str)), common.REPORT_OUT_TOKENS)
+    name = f"{code}_{facts.get('asof')}"
+    exists = (report.REPORTS / f"{name}.html").exists()
     with st.container(border=True):
         st.markdown("**產生 LLM 文字報告**")
-        st.caption(f"用 Haiku 依上面的事實表寫摘要，這份大約 {common.cents(est)}。輸出寫進 reports/{code}_{facts.get('asof')}.html"
+        st.caption(f"用 Haiku 依上面的事實表寫摘要，這份大約 {common.cents(est)}。輸出寫進 reports/{name}.html"
                    " 與 .json。不顯示金鑰。")
-        go_btn = st.button("產生報告", type="primary", icon=":material/auto_awesome:")
+        if exists:
+            st.warning(f"這個時點已經有報告（{name}.html，下面可以直接看）。再產生會花錢，並覆蓋舊的。",
+                       icon=":material/info:")
+        go_btn = st.button("重新產生並覆蓋" if exists else "產生報告", type="secondary" if exists else "primary",
+                           icon=":material/auto_awesome:")
     if go_btn:
         with st.spinner("呼叫 Haiku…"):
             try:
@@ -482,31 +517,33 @@ if isinstance(facts, dict) and facts.get("_error"):
     st.stop()
 
 _hero(facts, series.get("px"))
-section = st.segmented_control("區塊", SECTIONS, default="價格", key="stock_section", label_visibility="collapsed")
-section = section or "價格"
+section = common.segmented("區塊", SECTIONS, "價格", key="stock_section", label_visibility="collapsed")
 if section == "價格":
     _price(facts, series.get("px"))
-elif section == "短中長期":
+    st.subheader("自訂區間報酬")
+    _performance(sig, code, asof)
+    st.subheader("除權息與減資")
+    _actions(facts)
+elif section == "模型看法":
+    st.subheader("短中長期標籤")
     _outlook(facts, common.cached_outlook(sig, code))
-elif section == "技術面":
-    _technical(facts)
-elif section == "綜合分數":
+    st.subheader("綜合分數")
     _scores(facts, series.get("trend"))
-elif section == "月營收":
+elif section == "訊號與形態":
+    _technical(facts)
+elif section == "營收財報":
+    st.subheader("月營收")
     _revenue(facts, series.get("rv"))
-elif section == "季財報":
+    st.subheader("季財報")
     _financials(facts, series.get("fn"))
-elif section == "法人":
+elif section == "籌碼":
+    st.subheader("三大法人")
     _chips(facts, series.get("chips"))
-elif section == "融資與外資":
+    st.subheader("融資融券與外資持股")
     _credit(facts)
 elif section == "重大訊息":
     _announcements(facts)
-elif section == "除權息":
-    _actions(facts)
 elif section == "同業":
     _peers(sig, code)
-elif section == "區間報酬":
-    _performance(sig, code, asof)
 elif section == "報告":
     _reports(code, facts, series)

@@ -11,7 +11,7 @@
 
 形態（全部用還原價，關鍵價位輸出時換回最新一天的價格基準）:
   帶量突破 / 帶量跌破  收盤創前 60 日收盤新高（新低），且成交值 > 前 60 日均值 × 2
-  箱型整理            近 20 日最高 − 最低 < 收盤 × 10%（中性，只標箱頂、箱底）
+  箱型整理            近 20 日最高 − 最低 < 收盤 × 10%，且當天沒有突破 / 跌破（中性，只標箱頂、箱底）
   箱型突破 / 跌破      前一天還在箱型內，收盤站上箱頂（跌破箱底）
   W 底 / M 頭         兩個相近（差 < 3%）的波段低點（高點），間隔 10–60 日，中間頸線離低點至少 5%；
                       第二個低點確認後（之後 5 日都沒更低）30 日內收盤突破頸線才成立，期間跌破低點就作廢
@@ -133,11 +133,12 @@ def detect(w: dict, keep_levels: int = EVENT_DAYS) -> tuple[dict, dict]:
     top = h.rolling(BOX_DAYS, min_periods=BOX_DAYS).max()
     bot = lo.rolling(BOX_DAYS, min_periods=BOX_DAYS).min()
     inbox = (top - bot) < BOX_PCT * c
-    put("box", inbox, top, bot)
     was = inbox.shift(1, fill_value=False)
-    put("box_up", was & (c > top.shift(1)), top.shift(1), bot.shift(1))
-    put("box_dn", was & (c < bot.shift(1)), top.shift(1), bot.shift(1))
-    del top, bot, inbox, was
+    up, dn = was & (c > top.shift(1)), was & (c < bot.shift(1))
+    put("box", inbox & ~up & ~dn, top, bot)             # 當天已突破 / 跌破就不再算整理中
+    put("box_up", up, top.shift(1), bot.shift(1))
+    put("box_dn", dn, top.shift(1), bot.shift(1))
+    del top, bot, inbox, was, up, dn
 
     for name, sign in (("w_bottom", 1), ("m_top", -1)):
         ev, neck, ext = doubles(lo, h, c, sign)

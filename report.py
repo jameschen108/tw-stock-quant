@@ -32,6 +32,7 @@ from patterns import stock_patterns
 from refprice import DISCLAIMER as REF_DISCLAIMER
 from refprice import stock_refprice
 from public_data import snapshots
+from update import CLOSED, fetch_end
 
 REPORTS = Path(__file__).parent / "reports"
 MODEL = "claude-haiku-5-5"
@@ -419,7 +420,9 @@ def freshness_warning() -> str | None:
     run_at = pd.Timestamp(st["run_at"])
     if pd.Timestamp.now() - run_at > pd.Timedelta(hours=24):
         msgs.append(f"資料上次更新是 {run_at:%Y-%m-%d %H:%M}")
-    lag = len(pd.bdate_range(st["last_price_date"], pd.Timestamp.today().normalize())) - 1
+    # 同 update.py：只算到現在抓得到的最後一天（17:30 前是昨天），颱風等臨時休市日不算工作天
+    days = pd.bdate_range(st["last_price_date"], fetch_end()).difference(pd.to_datetime(list(CLOSED)))
+    lag = len(days) - 1
     if lag > 1:
         msgs.append(f"最新行情是 {st['last_price_date']}（落後 {lag} 個工作天）")
     if st.get("problems"):

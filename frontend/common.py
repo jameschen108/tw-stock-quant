@@ -454,6 +454,9 @@ def fig_layout(fig, title: str = "", height: int = 340, legend: bool = True):
         legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1) if legend else None,
         showlegend=legend, hovermode="x unified",
     )
+    # 滑鼠提示的數字跟座標軸一樣格式化，不然會出現 2.256441 這種
+    fig.for_each_yaxis(lambda ax: ax.update(hoverformat=".1%" if (ax.tickformat or "").endswith("%") else ",.3~f")
+                       if ax.hoverformat is None else None)
     return fig
 
 

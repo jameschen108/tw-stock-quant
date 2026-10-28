@@ -454,9 +454,10 @@ def _llm_replay(model: str) -> None:
 def _mine() -> None:
     st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；要看過去用策略頁的「自選股回測」）。"
                "隔一個交易日收盤進場。月調組合在新月份由 update.py 調回目標權重，其餘只在你改持股時調整。"
-               "紀錄寫進 data/paper/mine_ledger.parquet，只追加。")
+               "紀錄只追加，不改寫。")
     meta = {k: v for k, v in mine.load_meta().items() if not v["archived"]}
-    with st.expander("建立新組合"):
+    own, llm = [k for k in meta if not _is_llm_book(k)], [k for k in meta if _is_llm_book(k)]
+    with st.expander("建立新組合", expanded=not own):
         c1, c2, c3 = st.columns([1.5, 3, 1.2])
         name = c1.text_input("組合名稱", key="mn_name")
         spec = c2.text_input("股票代號（可加 :權重）", "2330,2317,2454", key="mn_spec")
@@ -474,10 +475,13 @@ def _mine() -> None:
                     st.warning(str(e))
                 except Exception as e:
                     st.error("建立失敗：" + common.scrub(e))
-    if not meta:
-        common.empty("還沒有自選組合。")
+    if not own:
+        common.empty("還沒有自己的組合，用上面的「建立新組合」建一個。")
+    # LLM 實驗帳本主要在「LLM 決策」看，這裡預設不列，免得一進來就選到別人的組合
+    show_llm = bool(llm) and st.toggle(f"也列出 LLM 實驗帳本（{len(llm)} 組，只能看）", key="mn_show_llm")
+    names = own + (llm if show_llm else [])
+    if not names:
         return
-    names = [k for k in meta if not _is_llm_book(k)] + [k for k in meta if _is_llm_book(k)]
     name = st.selectbox("組合", names, key="mn_pick")
     m = meta[name]
     sigs = mine._latest_signals(mine.load_ledger(), name)

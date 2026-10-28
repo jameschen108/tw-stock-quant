@@ -30,6 +30,11 @@ def _new_chat():
     st.session_state.analyst_spent = 0.0
 
 
+def _fill(q: str) -> None:
+    """範例只填進輸入框，不直接送出：每次送出都要花錢。"""
+    st.session_state.analyst_input = q
+
+
 def _log_path() -> Path:
     if not st.session_state.analyst_log:
         analyst.LOGS.mkdir(parents=True, exist_ok=True)
@@ -66,13 +71,13 @@ for role, text in st.session_state.analyst_transcript:
     with st.chat_message(role):
         st.markdown(text)
 
-prompt = st.chat_input("問一個台股問題，例如：鴻海近 12 個月營收趨勢")
+prompt = st.chat_input("問一個台股問題，例如：鴻海近 12 個月營收趨勢", key="analyst_input")
 if not st.session_state.analyst_transcript and not prompt:
     st.markdown("**可以這樣問**")
+    st.caption("按一下只會填進下方輸入框，按 Enter 才送出（會花錢）。")
     cols = st.columns(2)
     for i, q in enumerate(EXAMPLES):
-        if cols[i % 2].button(q, key=f"ex_{i}", width="stretch"):
-            prompt = q
+        cols[i % 2].button(q, key=f"ex_{i}", width="stretch", on_click=_fill, args=(q,))
 if not prompt:
     st.stop()
 

@@ -1,6 +1,7 @@
 """策略：淨值、成績單、分段、自選股回測、參數微調、嘗試紀錄、線上試跑。"""
 import copy
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -203,14 +204,57 @@ _ROBUST_FMT = {"樣本外年化": "{:+.1%}", "0050": "{:+.1%}", "超額/年": "{
 _ROBUST_SIGNED = ["樣本外年化", "超額/年", "α/年", "年化", "0050 年化", "超額 / 年", "α / 年"]
 
 
-def _show_robust_json(payload) -> None:
+_VARIANT_RULES = [  # robust.variants 的標籤 → 中文；{v} 是變體的值，{b} 是原設定的值
+    (r"n(\d+)", "持股 {v} 檔", lambda c: c["select"]["n"], "（原 {b}）"),
+    (r"lag(\d+)", "訊號後第 {v} 個交易日成交", lambda c: c.get("lag", 1), "（原第 {b} 個）"),
+    (r"ma(\d+)", "大盤均線 {v} 日", lambda c: c["risk"]["regime_ma"], "（原 {b}）"),
+    (r"off(\d+)", "跌破均線留 {v}% 部位", lambda c: round(c["risk"]["regime_off"] * 100), "（原 {b}%）"),
+    (r"stop(\d+)", "停損 {v}%", lambda c: round(c["risk"]["stop_loss"] * 100), "（原 {b}%）"),
+    (r"dd(\d+)", "回落門檻 {v}%", lambda c: round(c["risk"]["dd_limit"] * 100), "（原 {b}%）"),
+    (r"tvol(\d+)", "目標波動 {v}%", lambda c: round(c["risk"]["target_vol"] * 100), "（原 {b}%）"),
+]
+_VARIANT_FIXED = {"cost2x": "手續費與證交稅加倍", "disc28": "手續費 2.8 折", "cap1m": "本金 100 萬",
+                  "fixed": "改成固定停損", "trailing": "改成移動停損"}
+
+
+def _variant_label(tag: str, base: dict) -> str:
+    if tag in _VARIANT_FIXED:
+        return _VARIANT_FIXED[tag]
+    for pat, text, cur, orig in _VARIANT_RULES:
+        m = re.fullmatch(pat, tag)
+        if m:
+            try:
+                b = cur(base)
+            except (KeyError, TypeError):
+                b = None
+            return text.format(v=m.group(1)) + ("" if b is None else orig.format(b=b))
+    return tag
+
+
+def _readable_variants(rows: list, base: dict) -> tuple[pd.DataFrame, str]:
+    """變體名換成中文；0050 每列都一樣（同一段期間），拿掉這欄改寫在說明。"""
+    df = pd.DataFrame(rows)
+    if "變體" in df:
+        df["變體"] = [_variant_label(str(t), base) for t in df["變體"]]
+    note = ""
+    if "0050" in df and df["0050"].nunique(dropna=True) <= 1:
+        etf = df["0050"].dropna()
+        note = f"同期 0050 樣本外年化 {etf.iloc[0]:+.1%}。" if len(etf) else ""
+        df = df.drop(columns="0050")
+    return df, note
+
+
+def _show_robust_json(payload, base: dict) -> None:
     def _table(rows: list) -> None:
         df = pd.DataFrame(rows)
         common.table(common.styled(df, fmt=_ROBUST_FMT, signed=_ROBUST_SIGNED), hide_index=True)
 
     if isinstance(payload, dict) and "variants" in payload:
         st.markdown("**變體**")
-        _table(payload["variants"])
+        df, note = _readable_variants(payload["variants"], base)
+        common.table(common.styled(df, fmt=_ROBUST_FMT, signed=_ROBUST_SIGNED), hide_index=True)
+        if note:
+            st.caption(note)
         if payload.get("segments"):
             st.markdown("**分段**")
             _table(payload["segments"])
@@ -240,67 +284,104 @@ def _variant_rows(sig: str, base: dict) -> list[dict]:
     return rows
 
 
-def _variant_table(rows: list[dict]) -> None:
-    df = pd.DataFrame(rows)
+def _variant_table(rows: list[dict], base: dict) -> None:
+    df, note = _readable_variants(rows, base)
     common.table(common.styled(df, fmt={"樣本外年化": "{:+.1%}", "0050": "{:+.1%}", "超額/年": "{:+.1%}",
                                         "超額 t": "{:+.2f}", "α/年": "{:+.1%}", "β": "{:.2f}", "α t": "{:+.2f}",
                                         "最大回落": "{:.1%}", "成本/年": "{:.2%}"},
                                signed=["樣本外年化", "超額/年", "α/年"]), hide_index=True)
-    st.caption("樣本外 = 2019 起。變體之間差很多代表結果對參數敏感。")
+    st.caption(note + "樣本外 = 2019 起。變體之間差很多代表結果對參數敏感。")
+
+
+# 線上試跑的選項：值照設定檔原樣（雜湊不變），畫面上顯示中文
+_SORT_LABEL = {"comp_equal": "綜合分數", "short_pct": "短期百分位", "mid_pct": "中期百分位", "long_pct": "長期百分位",
+               "rev_mom": "營收動能分數", "quality": "品質分數", "value": "價值分數", "trend": "趨勢分數",
+               "rev_yoy": "營收年增", "roe": "ROE", "ep": "盈餘殖利率 E/P", "bp": "淨值股價比 B/P", "mcap": "市值",
+               "avg_value": "20 日均成交值", "vol_60d": "60 日波動"}
+_WEIGHT_LABEL = {"equal": "等權", "inv_vol": "波動倒數（波動小的多買）", "score": "依排序分數"}
+_REGIME_LABEL = {"none": "不用", "ma": "均線濾網"}
+_INDEX_LABEL = {"0050": "0050 含息指數", "ew": "全市場等權指數"}
+_FREQ_LABEL = {"monthly": "每月換股時判斷", "daily": "每天判斷"}
+_STOP_LABEL = {"trailing": "從進場後高點算（移動）", "fixed": "從進場價算（固定）"}
+_FILTER_HELP = ("一行一條 pandas query，全部成立才選。可用欄位：短中長期 short / mid / long 的 _pct（0–100）與 _label"
+                "（'看漲'、'中性'、'看跌'），以及上面排序清單括號裡的欄位。例：mid_label == '看漲'")
+
+
+def _choice(col, label: str, mapping: dict, current: str, key: str, **kw) -> str:
+    """下拉選單顯示中文、回傳原值；設定檔用了清單外的值也保留。"""
+    opts = list(mapping) + ([current] if current not in mapping else [])
+    return col.selectbox(label, opts, index=opts.index(current), key=key,
+                         format_func=lambda v: mapping.get(v, v), **kw)
 
 
 def _trial_form(sig: str, paths: list[Path]) -> None:
     st.caption("改參數後回測。每次有結果都會記進嘗試紀錄（同一設定只記一次），"
                "讓 Deflated Sharpe 的「試過幾次」反映真實次數。股票池沿用起點設定檔，約 3–5 秒，有每日出場規則更久。")
-    base_path = st.selectbox("起點設定", paths, format_func=lambda p: p.stem, key="trial_base")
+    base_path = st.selectbox("起點設定", paths, format_func=lambda p: f"{strategy.load_config(p)['name']}（{p.stem}）",
+                             key="trial_base")
     cfg0 = strategy.load_config(base_path)
     pre = base_path.stem
     sel, pos, risk, cost = cfg0["select"], cfg0["position"], cfg0["risk"], cfg0["cost"]
+    frac = "0–1，例 0.20 = 20%"
     with st.form("trial"):
-        c1, c2, c3 = st.columns(3)
-        sort = c1.text_input("選股排序欄位", value=sel["sort"], key=f"tr_{pre}_sort")
+        st.markdown("**選股**")
+        c1, c2, c3 = st.columns([2, 1, 1], vertical_alignment="bottom")
+        sort = _choice(c1, "排序依據", {k: f"{v}（{k}）" for k, v in _SORT_LABEL.items()}, sel["sort"],
+                       f"tr_{pre}_sort")
         n = c2.number_input("持股檔數", min_value=1, max_value=200, value=int(sel["n"]), step=1, key=f"tr_{pre}_n")
-        ascending = c3.checkbox("排序由小到大", value=bool(sel["ascending"]), key=f"tr_{pre}_asc")
-        filters = st.text_area("選股條件（一行一條，pandas query）", value="\n".join(sel["filters"]), key=f"tr_{pre}_filters")
+        ascending = c3.checkbox("由小到大取（預設取最大的）", value=bool(sel["ascending"]), key=f"tr_{pre}_asc")
+        filters = st.text_area("選股條件", value="\n".join(sel["filters"]), key=f"tr_{pre}_filters", help=_FILTER_HELP,
+                               placeholder="沒有條件就留白")
+
+        st.markdown("**倉位**")
         c1, c2, c3, c4 = st.columns(4)
-        weighting = c1.selectbox("權重", ["equal", "inv_vol", "score"],
-                                 index=["equal", "inv_vol", "score"].index(pos["weighting"]), key=f"tr_{pre}_w")
+        weighting = _choice(c1, "權重", _WEIGHT_LABEL, pos["weighting"], f"tr_{pre}_w")
         max_weight = c2.number_input("單檔上限", min_value=0.0, max_value=1.0, value=float(pos["max_weight"]),
-                                     step=0.05, key=f"tr_{pre}_mw")
+                                     step=0.05, key=f"tr_{pre}_mw", help=frac + "；1 = 不限")
         max_industry = c3.number_input("單一產業上限", min_value=0.0, max_value=1.0,
-                                       value=float(pos["max_industry"]), step=0.05, key=f"tr_{pre}_mi")
+                                       value=float(pos["max_industry"]), step=0.05, key=f"tr_{pre}_mi",
+                                       help=frac + "；1 = 不限")
         exposure = c4.number_input("股票部位比例", min_value=0.0, max_value=1.0, value=float(pos["exposure"]),
-                                   step=0.05, key=f"tr_{pre}_ex")
-        min_trade = st.number_input("續抱股票小額不調（元）", min_value=0, value=int(pos["min_trade"]), step=1000,
-                                    key=f"tr_{pre}_mt")
-        c1, c2, c3, c4 = st.columns(4)
-        regime = c1.selectbox("大盤濾網", ["none", "ma"], index=0 if risk["regime"] != "ma" else 1, key=f"tr_{pre}_rg")
-        regime_ma = c2.number_input("均線天數", min_value=5, value=int(risk["regime_ma"]), step=10, key=f"tr_{pre}_ma")
-        regime_freq = c3.selectbox("濾網頻率", ["monthly", "daily"],
-                                   index=0 if risk["regime_freq"] != "daily" else 1, key=f"tr_{pre}_rf")
-        regime_off = c4.number_input("均線下留倉", min_value=0.0, max_value=1.0, value=float(risk["regime_off"]),
-                                     step=0.1, key=f"tr_{pre}_off")
-        c1, c2, c3, c4 = st.columns(4)
-        target_vol = c1.number_input("目標波動（0 = 關）", min_value=0.0, max_value=1.0,
-                                     value=float(risk["target_vol"]), step=0.01, format="%.2f", key=f"tr_{pre}_tv")
-        stop_loss = c2.number_input("停損（0 = 關）", min_value=0.0, max_value=1.0,
-                                    value=float(risk["stop_loss"]), step=0.01, format="%.2f", key=f"tr_{pre}_sl")
-        stop_type = c3.selectbox("停損型態", ["trailing", "fixed"],
-                                 index=0 if risk["stop_type"] != "fixed" else 1, key=f"tr_{pre}_st")
-        dd_limit = c4.number_input("回落門檻（0 = 關）", min_value=0.0, max_value=1.0,
-                                   value=float(risk["dd_limit"]), step=0.01, format="%.2f", key=f"tr_{pre}_dd")
-        dd_exposure = st.number_input("觸及回落後的曝險", min_value=0.0, max_value=1.0,
-                                      value=float(risk["dd_exposure"]), step=0.1, key=f"tr_{pre}_de")
-        c1, c2, c3, c4 = st.columns(4)
-        fee_rate = c1.number_input("手續費率", min_value=0.0, value=float(cost["fee_rate"]), step=0.000001,
-                                   format="%.6f", key=f"tr_{pre}_fee")
-        fee_discount = c2.number_input("手續費折數", min_value=0.0, value=float(cost["fee_discount"]), step=0.01,
-                                       format="%.2f", key=f"tr_{pre}_disc")
-        min_fee = c3.number_input("最低手續費（元）", min_value=0, value=int(cost["min_fee"]), step=1, key=f"tr_{pre}_minfee")
-        tax = c4.number_input("證交稅率", min_value=0.0, value=float(cost["tax"]), step=0.000001, format="%.6f",
-                              key=f"tr_{pre}_tax")
-        lag = st.number_input("訊號日後第幾個交易日成交", min_value=1, max_value=20, value=int(cfg0.get("lag", 1)),
-                              step=1, key=f"tr_{pre}_lag")
+                                   step=0.05, key=f"tr_{pre}_ex", help=frac + "；其餘放現金")
+        min_trade = st.number_input("續抱股票調整金額小於這個數就不調（元，0 = 都調）", min_value=0,
+                                    value=int(pos["min_trade"]), step=1000, key=f"tr_{pre}_mt",
+                                    help="避免每筆最低手續費吃掉小額調整；新買進、全部賣出不受影響")
+
+        st.markdown("**大盤濾網**")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        regime = _choice(c1, "濾網", _REGIME_LABEL, risk["regime"], f"tr_{pre}_rg")
+        regime_index = _choice(c2, "大盤指標", _INDEX_LABEL, risk["regime_index"], f"tr_{pre}_ri")
+        regime_ma = c3.number_input("均線天數", min_value=5, value=int(risk["regime_ma"]), step=10, key=f"tr_{pre}_ma")
+        regime_freq = _choice(c4, "多久判斷一次", _FREQ_LABEL, risk["regime_freq"], f"tr_{pre}_rf")
+        regime_off = c5.number_input("跌破均線時留多少部位", min_value=0.0, max_value=1.0,
+                                     value=float(risk["regime_off"]), step=0.1, key=f"tr_{pre}_off", help=frac)
+        st.caption("濾網選「不用」時，右邊幾格不會生效。")
+
+        st.markdown("**風險控制**（0 = 關）")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        target_vol = c1.number_input("目標年化波動", min_value=0.0, max_value=1.0, value=float(risk["target_vol"]),
+                                     step=0.01, format="%.2f", key=f"tr_{pre}_tv", help=frac + "；用持股過去 60 日估計")
+        stop_loss = c2.number_input("個股停損", min_value=0.0, max_value=1.0, value=float(risk["stop_loss"]),
+                                    step=0.01, format="%.2f", key=f"tr_{pre}_sl", help=frac + "；每天檢查")
+        stop_type = _choice(c3, "停損怎麼算", _STOP_LABEL, risk["stop_type"], f"tr_{pre}_st")
+        dd_limit = c4.number_input("資產回落門檻", min_value=0.0, max_value=1.0, value=float(risk["dd_limit"]),
+                                   step=0.01, format="%.2f", key=f"tr_{pre}_dd", help=frac + "；從高點回落超過就降曝險")
+        dd_exposure = c5.number_input("回落後留多少部位", min_value=0.0, max_value=1.0,
+                                      value=float(risk["dd_exposure"]), step=0.1, key=f"tr_{pre}_de",
+                                      help=frac + "；到下次換股才恢復")
+
+        with st.expander("交易成本與成交時點（通常不用改）"):
+            c1, c2, c3, c4, c5 = st.columns(5)
+            fee_rate = c1.number_input("手續費率", min_value=0.0, value=float(cost["fee_rate"]), step=0.000001,
+                                       format="%.6f", key=f"tr_{pre}_fee", help="法定 0.1425%")
+            fee_discount = c2.number_input("手續費折數", min_value=0.0, value=float(cost["fee_discount"]), step=0.01,
+                                           format="%.2f", key=f"tr_{pre}_disc", help="0.28 = 2.8 折，1 = 不打折")
+            min_fee = c3.number_input("最低手續費（元）", min_value=0, value=int(cost["min_fee"]), step=1,
+                                      key=f"tr_{pre}_minfee")
+            tax = c4.number_input("證交稅率", min_value=0.0, value=float(cost["tax"]), step=0.000001, format="%.6f",
+                                  key=f"tr_{pre}_tax", help="賣出時扣，股票 0.3%")
+            lag = c5.number_input("訊號後第幾個交易日成交", min_value=1, max_value=20, value=int(cfg0.get("lag", 1)),
+                                  step=1, key=f"tr_{pre}_lag")
         go = st.form_submit_button("試跑並寫入紀錄")
     if not go:
         return
@@ -309,7 +390,7 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
                          filters=[ln.strip() for ln in filters.splitlines() if ln.strip()])
     cfg["position"].update(weighting=weighting, max_weight=float(max_weight), max_industry=float(max_industry),
                            exposure=float(exposure), min_trade=int(min_trade))
-    cfg["risk"].update(regime=regime, regime_ma=int(regime_ma), regime_freq=regime_freq,
+    cfg["risk"].update(regime=regime, regime_index=regime_index, regime_ma=int(regime_ma), regime_freq=regime_freq,
                        regime_off=float(regime_off), target_vol=float(target_vol), stop_loss=float(stop_loss),
                        stop_type=stop_type, dd_limit=float(dd_limit), dd_exposure=float(dd_exposure))
     cfg["cost"].update(fee_rate=float(fee_rate), fee_discount=float(fee_discount), min_fee=int(min_fee), tax=float(tax))
@@ -390,7 +471,7 @@ def _variants(sig: str, paths: list[Path], labels: dict) -> None:
     if payload is not None:
         stale = _cache_status(base, payload)
         st.caption("上次存下的穩健性結果" + (f"，已經舊了（{stale}），可以現場重算" if stale else "") + "。")
-        _show_robust_json(payload)
+        _show_robust_json(payload, base)
     else:
         st.caption("這個策略還沒有存好的穩健性結果，可以現場重算。")
     n = len(robust.variants(base))
@@ -402,7 +483,7 @@ def _variants(sig: str, paths: list[Path], labels: dict) -> None:
             st.error("變體失敗：" + common.scrub(e))
     cached_rows = st.session_state.get("variant_rows_" + base["id"])
     if cached_rows:
-        _variant_table(cached_rows)
+        _variant_table(cached_rows, base)
 
 
 def _trial_log() -> None:
@@ -458,17 +539,20 @@ def _custom() -> None:
     labels = [("strategy", "自選（扣成本）"), ("pool", "自選（不扣成本）"), ("etf", paper.ETF)]
     p = res["perf"].get("strategy") or {}
     common.kpis([
-        ("總報酬", common.signed_html((1 + res["daily"]["strategy"]).prod() - 1, 2), "扣成本"),
+        ("總報酬", common.signed_html((1 + res["daily"]["strategy"]).prod() - 1), "扣成本"),
         ("年化", common.signed_html(p.get("cagr")), "不到 20 個交易日不算" if not p else ""),
         ("Sharpe", common.plain(p.get("sharpe"), 2), ""),
         ("最大回落", common.pct(p.get("mdd")), f"{p.get('mdd_days', '—')} 個交易日沒回到高點" if p else ""),
         ("期末資產", f"{res['nav'].iloc[-1]:,.0f}", "元"),
     ])
-    common.nav_chart(res["daily"], labels, "累積淨值（起點 = 1）")
+    hold = st.session_state.get("cu_key", (None,) * 4)[3] == "買進持有"
+    # 買進持有只成交一次，扣不扣成本的兩條線幾乎重疊，圖上只畫扣成本的
+    common.nav_chart(res["daily"], [x for x in labels if not (hold and x[0] == "pool")], "累積淨值（起點 = 1）")
     common.cmp_table(res["daily"], res["perf"], labels)
     st.markdown("**目標權重**")
     common.weight_table(res["weights"])
-    st.caption(common.cost_line(res) + "。不扣成本的那條是同一組目標權重買進持有。")
+    st.caption(common.cost_line(res) + "。「不扣成本」是同一組目標權重買進持有"
+               + ("，買進持有時和扣成本幾乎一樣，所以圖上沒畫。" if hold else "。"))
 
 
 def _reports() -> None:

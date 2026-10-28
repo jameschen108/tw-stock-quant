@@ -13,6 +13,7 @@ _HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(_HERE), str(_HERE.parent)]
 
 import common
+import daily
 import report
 
 HAIKU = "claude-haiku-5-5"
@@ -28,6 +29,19 @@ def _labels(sig: str) -> tuple[list[str], dict[str, str]]:
     return labels, {lab.split()[0]: lab for lab in labels}
 
 
+def _toggle_watch(code: str, name: str) -> None:
+    """加入或移出 watchlist.txt（前端唯一會寫的設定檔），保留其他行和註解。"""
+    path = daily.WATCHLIST
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    if code in daily.read_watchlist():
+        lines = [ln for ln in lines if ln.split("#")[0].strip() != code]
+        st.toast(f"已把 {code} {name} 移出觀察名單", icon=":material/check:")
+    else:
+        lines.append(f"{code}  # {name}" if name else code)
+        st.toast(f"已把 {code} {name} 加入觀察名單", icon=":material/check:")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _picker(sig: str, default_asof: str):
     labels, by_code = _labels(sig)
     goto = st.session_state.pop("goto_code", None)
@@ -36,11 +50,15 @@ def _picker(sig: str, default_asof: str):
     elif "stock_pick" not in st.session_state:
         q = st.query_params.get("code")
         st.session_state["stock_pick"] = by_code.get(q) or by_code.get("2330") or labels[0]
-    c1, c2 = st.columns([3, 1])
+    c1, c2, c3 = st.columns([3, 1, 0.7], vertical_alignment="bottom")
     chosen = c1.selectbox("股票（打代號或名稱篩選）", labels, key="stock_pick")
     asof = c2.date_input("資料時點", value=date.fromisoformat(default_asof), max_value=date.fromisoformat(default_asof),
                          help="選過去的日期做時點回溯：只用當時已公布的資料")
     code = chosen.split()[0]
+    name = chosen[len(code):].replace("（近 10 天無交易）", "").strip()
+    watched = code in daily.read_watchlist()
+    c3.button("移出觀察" if watched else "加入觀察", icon=":material/star:" if watched else ":material/star_border:",
+              on_click=_toggle_watch, args=(code, name), width="stretch", key="watch_toggle")
     if st.query_params.get("code") != code:
         st.query_params["code"] = code
     return code, asof
@@ -394,8 +412,14 @@ def _peers(sig: str, code: str):
                             signed=["營收年增%", "近3月年增%"])
         sty = sty.apply(lambda r: ["font-weight: 700; background: rgba(59,130,246,.10)" if r["代號"] == code else ""
                                    for _ in r], axis=1)
-        common.table(sty, hide_index=True, column_config={
-            "綜合分數": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%d")})
+        # key 帶代號：換股後是新的表，不會沿用上一檔的選取又跳走
+        ev = common.table(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key=f"peers_{code}",
+                          column_config={"綜合分數": st.column_config.ProgressColumn(min_value=0, max_value=100,
+                                                                                  format="%d")})
+        sel = ev.selection.rows if ev and ev.selection else []
+        if sel and str(show.iloc[sel[0]]["代號"]) != code:
+            common.goto_stock(str(show.iloc[sel[0]]["代號"]))
+        st.caption("點一列打開那檔個股。")
     med = raw.get("median") or {}
     if med:
         st.caption("同業中位數：" + "、".join(f"{rename.get(k, k)} {common.plain(v, 1)}"
@@ -428,11 +452,17 @@ def _performance(sig: str, code: str, asof: date):
 
 def _reports(code: str, facts: dict, series: dict):
     est = common.estimate_usd(HAIKU, len(json.dumps(facts, ensure_ascii=False, default=str)), common.REPORT_OUT_TOKENS)
+    name = f"{code}_{facts.get('asof')}"
+    exists = (report.REPORTS / f"{name}.html").exists()
     with st.container(border=True):
         st.markdown("**產生 LLM 文字報告**")
-        st.caption(f"用 Haiku 依上面的事實表寫摘要，這份大約 {common.cents(est)}。輸出寫進 reports/{code}_{facts.get('asof')}.html"
+        st.caption(f"用 Haiku 依上面的事實表寫摘要，這份大約 {common.cents(est)}。輸出寫進 reports/{name}.html"
                    " 與 .json。不顯示金鑰。")
-        go_btn = st.button("產生報告", type="primary", icon=":material/auto_awesome:")
+        if exists:
+            st.warning(f"這個時點已經有報告（{name}.html，下面可以直接看）。再產生會花錢，並覆蓋舊的。",
+                       icon=":material/info:")
+        go_btn = st.button("重新產生並覆蓋" if exists else "產生報告", type="secondary" if exists else "primary",
+                           icon=":material/auto_awesome:")
     if go_btn:
         with st.spinner("呼叫 Haiku…"):
             try:

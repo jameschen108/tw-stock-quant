@@ -64,6 +64,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 區間報酬 | `analyst.price_performance(code, start, end)`（回傳 JSON 字串） |
 | 產生 LLM 報告（按鈕） | `report.llm_narrative(facts)` → dict；HTML 用 `report.render(facts, series, narrative)`。Haiku，每份約 1 美分以內 |
 | 既有報告 | `reports/{code}_{asof}.html` / `.json` |
+| 加入 / 移出觀察名單（代號旁的按鈕） | 改 `watchlist.txt`，和總覽「編輯觀察名單」同一個檔；保留其他行和註解 |
 
 ## 頁 3：策略
 

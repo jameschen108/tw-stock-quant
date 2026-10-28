@@ -150,8 +150,11 @@ def load_calib() -> dict:
     return json.loads(f.read_text()) if f.exists() else {}
 
 
-def stock_outlook(code: str, asof: pd.Timestamp) -> dict:
-    """給 report.py / analyst.py：asof 當時最新一期的三個期間標籤與各自的歷史校準。"""
+def stock_outlook(code: str, asof: pd.Timestamp, hit_by_label: bool = False) -> dict:
+    """給 report.py / analyst.py：asof 當時最新一期的三個期間標籤與各自的歷史校準。
+
+    hit_by_label 另外附各標籤的樣本外勝率。預設不附：analyst.stock_facts 也是 llm_trader 的輸入，
+    改了會讓前向實驗前後條件不一致，所以只有 report.py 的摘要開啟。"""
     f = OUT / "outlook.parquet"
     if not f.exists():
         return {}
@@ -175,6 +178,8 @@ def stock_outlook(code: str, asof: pd.Timestamp) -> dict:
             "history_same_label_oos": None if pd.isna(lab) else oos.get(lab),
             "history_by_label_oos": {l: oos.get(l, {}).get("mean_ex_pct") for l in LABELS},
             "bull_minus_bear_oos_pct": oos.get("spread_pct"), "t": oos.get("t")}
+        if hit_by_label:
+            sec["horizons"][h["name"]]["hit_pct_by_label_oos"] = {l: oos.get(l, {}).get("hit_pct") for l in LABELS}
     return sec
 
 

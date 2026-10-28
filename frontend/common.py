@@ -30,7 +30,8 @@ CHAT_OUT_TOKENS = 2000
 # 台股慣例：漲紅跌綠
 UP, DOWN = "#e5484d", "#18a058"
 C_STRAT, C_POOL, C_ETF = "#3b82f6", "#94a3b8", "#f59e0b"
-LABEL_CLASS = {"看漲": "bull", "看跌": "bear", "中性": "neutral"}
+LABEL_CLASS = {"看漲": "bull", "看跌": "bear", "中性": "neutral", "多": "bull", "空": "bear",
+               "看漲形態": "bull", "看跌形態": "bear"}
 
 STATUS_FILE = ROOT / "data" / "update_status.json"
 
@@ -359,7 +360,7 @@ def cached_picks(_sig: str):
 @st.cache_data(show_spinner=False, max_entries=64)
 def cached_facts(_sig: str, code: str, asof: str):
     try:
-        return report.build_facts(code, pd.Timestamp(asof))
+        return report.build_facts(code, pd.Timestamp(asof), extended=True)   # 個股頁和報告同一份事實表
     except SystemExit as e:
         return {"_error": str(e)}, {}
 

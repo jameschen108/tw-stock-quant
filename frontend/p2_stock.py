@@ -16,7 +16,7 @@ import common
 import report
 
 HAIKU = "claude-haiku-5-5"
-SECTIONS = ["價格", "短中長期", "綜合分數", "月營收", "季財報", "法人", "融資與外資", "重大訊息", "除權息",
+SECTIONS = ["價格", "短中長期", "技術面", "綜合分數", "月營收", "季財報", "法人", "融資與外資", "重大訊息", "除權息",
             "同業", "區間報酬", "報告"]
 
 
@@ -138,6 +138,61 @@ def _outlook(facts: dict, hist: pd.DataFrame):
         fig.add_hrect(y0=80, y1=100, fillcolor=common.UP, opacity=0.06, line_width=0)
         fig.add_hrect(y0=0, y1=20, fillcolor=common.DOWN, opacity=0.06, line_width=0)
         common.chart(fig)
+
+
+def _technical(facts: dict):
+    mx, pt, rp = facts.get("signal_matrix"), facts.get("patterns") or {}, facts.get("reference_prices") or {}
+    if not mx:
+        common.empty("沒有訊號矩陣。")
+        return
+    ag = mx["agreement"]
+    hist = mx.get("history_oos_same_net_3dims") or {}
+    h20 = hist.get("20 日") or {}
+    common.kpis([
+        ("一致數", f"{ag['net']:+d}", f"偏多 {ag['多']}・偏空 {ag['空']}・中性 {ag['中性']}", True),
+        ("三維一致數", "—" if hist.get("net_3dims") is None else f"{hist['net_3dims']:+d}", "技術、基本面、綜合"),
+        ("同三維一致數的歷史", common.signed_html(h20.get("mean_ex_pct"), 2, 1),
+         "樣本外 20 日平均產業中性超額" + (f"・勝率 {h20['hit_pct']:.0f}%" if h20.get("hit_pct") is not None else "")),
+    ])
+    for col, (k, v) in zip(st.columns(len(mx["dimensions"])), mx["dimensions"].items()):
+        with col.container(border=True):
+            st.markdown(f"**{k}**　{common.badge(v['direction'] or '資料不足')}", unsafe_allow_html=True)
+            st.caption(v["basis"])
+    st.markdown("**矛盾清單**")
+    st.markdown("\n".join(f"- {c}" for c in mx["contradictions"]) or "沒有")
+    st.caption(mx["method"])
+
+    st.markdown("**成立中的形態**")
+    if pt.get("patterns"):
+        df = pd.DataFrame([{"形態": x["name"], "方向": x["side"], "成立日": x["formed"],
+                            "關鍵價位": "、".join(f"{k} {v:,.2f}" for k, v in x["levels"].items()),
+                            "可靠度": x["reliability"] or "—",
+                            "樣本外 20 日平均超額%": (x["history_oos"] or {}).get("mean_ex_pct"),
+                            "勝率%": (x["history_oos"] or {}).get("hit_pct")} for x in pt["patterns"]])
+        st.dataframe(common.styled(df, fmt={"樣本外 20 日平均超額%": "{:+.2f}", "勝率%": "{:.0f}"},
+                                   signed=["樣本外 20 日平均超額%"]), hide_index=True)
+        st.caption(pt["note"])
+    elif pt:
+        st.caption(f"{pt['date']} 沒有成立中的形態。")
+    if not pt and not rp:
+        st.caption("形態與參考價只存最新資料日，這個時點沒有。")
+    if rp:
+        sr, sp, vb = rp["support_resistance"], rp["stop_reference"], rp["volatility_bands"]
+        st.markdown(f"**參考價**（{rp['date']}，收盤 {rp['close']:,.2f}）")
+        lv = lambda x: "—" if x["price"] is None else f"{x['price']:,.2f}"
+        band = lambda b: "—" if b.get("low") is None else f"{b['low']:,.2f} – {b['high']:,.2f}"
+        cov = lambda b: f"歷史覆蓋率 {common.plain(b.get('history_oos_inside_pct'), 1, '%')}" + (
+            f"（同波動 {b['history_oos_inside_pct_same_vol']:.1f}%）"
+            if b.get("history_oos_inside_pct_same_vol") is not None else "")
+        hit = "、".join(f"{k} {v:.0f}%" for k, v in sp["history_oos_hit_pct"].items() if v is not None)
+        common.kpis([
+            ("支撐", lv(sr["support"]), sr["support"]["source"] or ""),
+            ("壓力", lv(sr["resistance"]), sr["resistance"]["source"] or ""),
+            ("停損參考", "—" if sp["price"] is None else f"{sp['price']:,.2f}", f"{sp['rule']}・歷史碰到 {hit}"),
+            ("統計區間 20 日", band(vb["20 日"]), cov(vb["20 日"])),
+            ("統計區間 60 日", band(vb["60 日"]), cov(vb["60 日"])),
+        ])
+        st.caption(f"{vb['note']}　{rp['disclaimer']}")
 
 
 def _scores(facts: dict, trend: pd.Series):
@@ -402,6 +457,8 @@ def _reports(code: str, facts: dict, series: dict):
                         col.markdown(f"- {it}")
                 if narrative.get("outlook"):
                     st.markdown("**模型標籤**　" + narrative["outlook"])
+                if narrative.get("technical"):
+                    st.markdown("**技術面**　" + narrative["technical"])
     files = sorted(report.REPORTS.glob(f"{code}_*.html"))
     if not files:
         st.caption("這個代號還沒有報告。")
@@ -431,6 +488,8 @@ if section == "價格":
     _price(facts, series.get("px"))
 elif section == "短中長期":
     _outlook(facts, common.cached_outlook(sig, code))
+elif section == "技術面":
+    _technical(facts)
 elif section == "綜合分數":
     _scores(facts, series.get("trend"))
 elif section == "月營收":

@@ -98,15 +98,16 @@ def _multi(rows: list[dict]) -> None:
             if has:
                 df = pd.DataFrame(x["holdings"]).rename(columns={"code": "代號", "name": "名稱", "value": "市值(元)",
                                                                  "weight": "佔資產"})
-                common.table(common.styled(df[["代號", "名稱", "市值(元)", "佔資產"]],
-                                           fmt={"市值(元)": "{:,.0f}", "佔資產": "{:.1%}"}), hide_index=True)
+                with st.expander(f"目前持股 {len(df)} 檔"):
+                    common.table(common.styled(df[["代號", "名稱", "市值(元)", "佔資產"]],
+                                               fmt={"市值(元)": "{:,.0f}", "佔資產": "{:.1%}"}), hide_index=True)
             else:
                 df = pd.DataFrame(x.get("targets") or [])
                 if not df.empty:
-                    st.markdown(f"本期目標權重（訊號日 {x.get('signal_date')}）")
                     df = df.rename(columns={"code": "代號", "name": "名稱", "weight": "目標權重"})
-                    common.table(common.styled(df[["代號", "名稱", "目標權重"]], fmt={"目標權重": "{:.1%}"}),
-                                 hide_index=True, height=240)
+                    with st.expander(f"本期目標權重 {len(df)} 檔（訊號日 {x.get('signal_date')}）"):
+                        common.table(common.styled(df[["代號", "名稱", "目標權重"]], fmt={"目標權重": "{:.1%}"}),
+                                     hide_index=True, height=240)
 
 
 def _ledger() -> None:
@@ -146,8 +147,8 @@ def _strat_nav() -> None:
         st.warning("strat_nav.parquet 缺 strategy / date / nav 欄，先不畫。")
         return
     if df.empty:
-        _wait_entry("淨值曲線")
         return
+    st.subheader("各策略淨值")
     names = sorted(df["strategy"].dropna().unique())
     pick = st.multiselect("要畫的策略", names, default=names, key="strat_nav_pick")
     view = df[df["strategy"].isin(pick)].sort_values("date")
@@ -630,26 +631,25 @@ summary = common.cached_paper_summary(sig)
 strats = paper.load_strategy_summaries()
 common.page_title("模擬持股", f"即時紀錄，起點之前沒有資料・多策略 {len(strats)} 個")
 
-section = common.segmented(
-    "區塊", ["綜合分數前 30", "多策略", "各策略淨值", "每期紀錄", "自選股回測", "自選組合", "LLM 決策", "追蹤設定"],
-    "綜合分數前 30", key="paper_section", label_visibility="collapsed")
-if section == "綜合分數前 30":
+section = common.segmented("區塊", ["策略追蹤", "自選股回測", "自選組合", "LLM 決策"], "策略追蹤",
+                           key="paper_section", label_visibility="collapsed")
+if section == "策略追蹤":
+    st.subheader("綜合分數前 30")
     _top30(summary)
-elif section == "多策略":
-    _multi(strats)
-elif section == "各策略淨值":
     _strat_nav()
-elif section == "每期紀錄":
-    _ledger()
+    st.subheader("多策略")
+    _multi(strats)
+    with st.expander("每期紀錄"):
+        _ledger()
+    with st.expander("追蹤哪些策略"):
+        st.caption("paper_strategies.txt。這裡只顯示；改了要等下個月才會記新策略。")
+        if paper.STRATS_FILE.exists():
+            st.code(paper.STRATS_FILE.read_text(encoding="utf-8"), language="text")
+        else:
+            common.empty("沒有 paper_strategies.txt。")
 elif section == "自選股回測":
     _custom()
 elif section == "自選組合":
     _mine()
 elif section == "LLM 決策":
     _llm()
-elif section == "追蹤設定":
-    st.caption("paper_strategies.txt。這裡只顯示；改了要等下個月才會記新策略。")
-    if paper.STRATS_FILE.exists():
-        st.code(paper.STRATS_FILE.read_text(encoding="utf-8"), language="text")
-    else:
-        common.empty("沒有 paper_strategies.txt。")

@@ -16,8 +16,7 @@ import common
 import report
 
 HAIKU = "claude-haiku-5-5"
-SECTIONS = ["價格", "短中長期", "技術面", "綜合分數", "月營收", "季財報", "法人", "融資與外資", "重大訊息", "除權息",
-            "同業", "區間報酬", "報告"]
+SECTIONS = ["價格", "模型看法", "訊號與形態", "營收財報", "籌碼", "重大訊息", "同業", "報告"]
 
 
 # ---------------------------------------------------------------- 選股
@@ -83,16 +82,17 @@ def _hero(facts: dict, px: pd.DataFrame) -> None:
 def _price(facts: dict, px: pd.DataFrame):
     p = facts.get("price") or {}
     common.kpis([
-        ("近 1 月", common.signed_html(p.get("ret_1m")), "含息"),
-        ("近 3 月", common.signed_html(p.get("ret_3m")), "含息"),
-        ("近 6 月", common.signed_html(p.get("ret_6m")), "含息"),
-        ("近 12 月", common.signed_html(p.get("ret_12m")), "含息"),
+        ("近 1 月", common.signed_html(p.get("ret_1m")), ""),
+        ("近 3 月", common.signed_html(p.get("ret_3m")), ""),
+        ("近 6 月", common.signed_html(p.get("ret_6m")), ""),
+        ("近 12 月", common.signed_html(p.get("ret_12m")), ""),
         ("距 52 週高點", common.signed_html(p.get("from_52w_high")), ""),
         ("相對 200 日均線", common.signed_html(p.get("ma200_gap")), ""),
         ("60 日年化波動", common.pct(p.get("vol_60d_ann")).lstrip("+"), ""),
         ("近 1 年最大回落", common.pct(p.get("max_drawdown_1y")), ""),
         ("20 日均成交值", common.num(p.get("avg_value_20d_億")) + " 億", ""),
     ])
+    st.caption("報酬都含息（用調整後價格）。")
     if px is None or px.empty:
         return
     s = px.set_index("date")["adj_close"]
@@ -364,10 +364,11 @@ def _announcements(facts: dict):
 def _actions(facts: dict):
     rows = facts.get("corporate_actions") or []
     if not rows:
-        common.empty("近期沒有除權息、減資或 ETF 分割。")
+        st.caption("近期沒有除權息、減資或 ETF 分割。")
         return
-    common.table(pd.DataFrame(rows).rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤",
-                                                    "ref": "參考價"}), hide_index=True)
+    df = pd.DataFrame(rows).sort_values("date", ascending=False)
+    common.table(df.rename(columns={"date": "日期", "kind": "類型", "prev_close": "前收盤", "ref": "參考價"}),
+                 hide_index=True)
 
 
 def _peers(sig: str, code: str):
@@ -485,27 +486,30 @@ _hero(facts, series.get("px"))
 section = common.segmented("區塊", SECTIONS, "價格", key="stock_section", label_visibility="collapsed")
 if section == "價格":
     _price(facts, series.get("px"))
-elif section == "短中長期":
+    st.subheader("自訂區間報酬")
+    _performance(sig, code, asof)
+    st.subheader("除權息與減資")
+    _actions(facts)
+elif section == "模型看法":
+    st.subheader("短中長期標籤")
     _outlook(facts, common.cached_outlook(sig, code))
-elif section == "技術面":
-    _technical(facts)
-elif section == "綜合分數":
+    st.subheader("綜合分數")
     _scores(facts, series.get("trend"))
-elif section == "月營收":
+elif section == "訊號與形態":
+    _technical(facts)
+elif section == "營收財報":
+    st.subheader("月營收")
     _revenue(facts, series.get("rv"))
-elif section == "季財報":
+    st.subheader("季財報")
     _financials(facts, series.get("fn"))
-elif section == "法人":
+elif section == "籌碼":
+    st.subheader("三大法人")
     _chips(facts, series.get("chips"))
-elif section == "融資與外資":
+    st.subheader("融資融券與外資持股")
     _credit(facts)
 elif section == "重大訊息":
     _announcements(facts)
-elif section == "除權息":
-    _actions(facts)
 elif section == "同業":
     _peers(sig, code)
-elif section == "區間報酬":
-    _performance(sig, code, asof)
 elif section == "報告":
     _reports(code, facts, series)

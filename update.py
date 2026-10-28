@@ -16,7 +16,8 @@
   4. 重建      build_prices →（籌碼 fetch_chips：三大法人、融資融券、外資持股，再 --build）→ build_panel → factors → composite → outlook（短中長期標籤）
   5. 檢查      最新交易日、資料列數不減少、近 30 日可疑報酬、月營收覆蓋率、財報季覆蓋率（季底到期限後 30 天），
                結果寫 data/update_status.json
-  6. 模擬持股  paper.py：新月份記一期綜合分數前 30 名與 paper_strategies.txt 各策略的目標權重，重算淨值；mine.py：自選組合（月調的記新月份）
+  6. 技術面    technicals.py --part latest（最新一天的技術訊號值）、patterns.py --latest（成立中的價格形態，沿用既有校準）
+     模擬持股  paper.py：新月份記一期綜合分數前 30 名與 paper_strategies.txt 各策略的目標權重，重算淨值；mine.py：自選組合（月調的記新月份）
   7. 每日速覽  daily.py：觀察名單（watchlist.txt）的變化 + 財報季新公布的公司 → reports/daily_YYYYMMDD.html
 
 紀錄寫到 logs/update_YYYYMMDD.log；任何一步失敗或檢查不過，結束碼非 0。
@@ -219,6 +220,8 @@ def main():
             f"已公布 {ss['reported']}/{ss['expected']} 家，營業現金流已補 {ss['cashflow_filled']}、待補 {ss['cashflow_pending']}")
     for p in problems:
         log(f"⚠ {p}")
+    ok &= run(["uv", "run", "-q", "technicals.py", "--part", "latest"], "最新技術訊號")
+    ok &= run(["uv", "run", "-q", "patterns.py", "--latest"], "最新價格形態")
     ok &= run(["uv", "run", "-q", "paper.py"], "模擬持股")
     ok &= run(["uv", "run", "-q", "mine.py"], "自選組合")
     ok &= run(["uv", "run", "-q", "daily.py"], "每日速覽")

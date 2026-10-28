@@ -6,8 +6,8 @@
 
 細節見 [memo_signals.md](memo_signals.md)。**不要動 `llm_trader.py` 的 prompt 和事實表**（`analyst.stock_facts` 也是它的輸入），新東西放 `report.py`、前端，要測 LLM 另開實驗組。
 
-- [ ] `technicals.py` 存最新一天的訊號值
-- [ ] `patterns.py`：帶量突破、箱型、W 底 / M 頭、回測均線、跳空缺口，附回測校準；沒通過的標「歷史上不可靠」
+- [x] `technicals.py` 存最新一天的訊號值
+- [x] `patterns.py`：帶量突破、箱型、W 底 / M 頭、回測均線、跳空缺口，附回測校準；沒通過的標「歷史上不可靠」
 - [ ] 參考價：支撐 / 壓力、收盤 − 2 × ATR(14) 停損參考、統計波動區間；回測區間覆蓋率是否接近 68%
 - [ ] 訊號矩陣（技術、籌碼、基本面、綜合）與矛盾清單；每試一種組合記進 `data/strategy/trials.jsonl`
 - [ ] 個股頁、報告顯示；`report.py` prompt 改成可引用參考價（仍不給目標價）

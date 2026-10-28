@@ -1,4 +1,4 @@
-"""策略：淨值、成績單、分段、參數微調、嘗試紀錄、線上試跑。"""
+"""策略：淨值、成績單、分段、自選股回測、參數微調、嘗試紀錄、線上試跑。"""
 import copy
 import json
 import sys
@@ -12,6 +12,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path[:0] = [str(_HERE), str(_HERE.parent)]
 
 import common
+import custom
+import paper
 import robust
 import strategy
 
@@ -80,16 +82,16 @@ def _run(sig: str, cfg: dict):
     if saved is not None:
         stale = _cache_status(cfg, saved[1])
         if stale is None:
-            return saved[0], saved[1], "後端快取"
+            return saved[0], saved[1], "已存結果"
         if stale != "雜湊不符":
-            return saved[0], saved[1], f"後端快取（{stale}）"
-        skipped = "設定已改，後端快取雜湊不符。"
+            return saved[0], saved[1], f"已存結果（{stale}）"
+        skipped = "策略檔改過，已存結果不能用。"
     res = common.cached_simulate(sig, cfg)
     if res is None:
         return None, None, "現場"
     n_same, n_all, var = _trial_stats(cfg["id"])
     sc = strategy.scorecard(cfg, res, n_same, n_all, var)
-    return res["daily"], sc, f"{skipped or ''}現場（已快取，未寫入嘗試紀錄）"
+    return res["daily"], sc, f"{skipped or ''}現場重算（不寫入嘗試紀錄）"
 
 
 def _score_table(sc: dict) -> None:
@@ -248,7 +250,7 @@ def _variant_table(rows: list[dict]) -> None:
 
 
 def _trial_form(sig: str, paths: list[Path]) -> None:
-    st.caption("改參數後回測。每次有結果都會寫入 data/strategy/trials.jsonl（同一設定不重複記），"
+    st.caption("改參數後回測。每次有結果都會記進嘗試紀錄（同一設定只記一次），"
                "讓 Deflated Sharpe 的「試過幾次」反映真實次數。股票池沿用起點設定檔，約 3–5 秒，有每日出場規則更久。")
     base_path = st.selectbox("起點設定", paths, format_func=lambda p: p.stem, key="trial_base")
     cfg0 = strategy.load_config(base_path)
@@ -329,9 +331,8 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
 
 
 def _compare(sig: str, paths: list[Path], labels: dict) -> None:
-    st.caption("優先讀 data/strategy/results/ 的後端快取，不寫嘗試紀錄。設定雜湊對不上就改現場回測；"
-               "快取資料日比價格日舊時仍用快取，並標出日期。資料或策略檔更新後要重跑 "
-               "`uv run strategy.py strategies/*.toml --no-log`。")
+    st.caption("用上次「重算回測快取」存下的結果，看的時候不寫入嘗試紀錄；策略檔改過的會現場重算。"
+               "資料更新後，按右上「更新 / 重算」→「重算回測快取」。")
     chosen = st.multiselect("要比較的策略", paths, default=paths[:1], format_func=lambda p: labels[p],
                             key="cmp_pick", placeholder="選一個或多個策略")
     if not chosen:
@@ -387,14 +388,11 @@ def _variants(sig: str, paths: list[Path], labels: dict) -> None:
     base = strategy.load_config(one)
     path_json, payload = _robust_file(base["id"])
     if payload is not None:
-        note = f"後端 JSON：{path_json.relative_to(common.ROOT)}"
         stale = _cache_status(base, payload)
-        if stale:
-            note += f"。這份是舊的（{stale}）"
-        st.caption(note)
+        st.caption("上次存下的穩健性結果" + (f"，已經舊了（{stale}），可以現場重算" if stale else "") + "。")
         _show_robust_json(payload)
     else:
-        st.caption("還沒有這個策略的穩健性 JSON（data/strategy/results/<id>_robust.json），可以現場重算。")
+        st.caption("這個策略還沒有存好的穩健性結果，可以現場重算。")
     n = len(robust.variants(base))
     if st.button(f"現場重算 {n} 個變體", icon=":material/tune:", help="每個幾秒鐘，都會寫入嘗試紀錄"):
         try:
@@ -410,7 +408,7 @@ def _variants(sig: str, paths: list[Path], labels: dict) -> None:
 def _trial_log() -> None:
     rows = _trials()
     if not rows:
-        common.empty("還沒有 trials.jsonl。")
+        common.empty("還沒有嘗試紀錄。")
         return
     df = pd.DataFrame([{"時間": r.get("time"), "代號": r.get("id"), "名稱": r.get("name"), "雜湊": r.get("hash"),
                         "月 Sharpe": r.get("sharpe_m"), "超額 Sharpe": r.get("sharpe_ex"),
@@ -423,6 +421,54 @@ def _trial_log() -> None:
     ])
     common.table(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "超額 Sharpe": "{:.3f}", "年化": "{:+.1%}"},
                                signed=["年化"]), hide_index=True)
+
+
+def _custom() -> None:
+    st.caption("自己挑股票和起訖日回頭重播。進場是開始日的下一個交易日收盤，成本、零股取整、漲跌停同回測。"
+               "代號用逗號分隔，可加 :權重（例 2330:50,2317:30）。不寫檔。")
+    last = common.load_status().get("last_price_date")
+    end0 = pd.Timestamp(last) if last else pd.Timestamp.today().normalize()
+    c1, c2, c3, c4 = st.columns([3, 1.2, 1.2, 1.2])
+    spec = c1.text_input("股票代號", "2330,2317,2454", key="cu_codes")
+    start = c2.date_input("開始日", pd.Timestamp("2023-01-03"), key="cu_start")
+    end = c3.date_input("結束日", end0, max_value=end0, key="cu_end")
+    cap = c4.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="cu_cap")
+    mode = common.segmented("調整方式", ["買進持有", "每月調回目標權重"], "買進持有", key="cu_mode")
+    if st.button("開始回測", icon=":material/play_arrow:", key="cu_run"):
+        try:
+            with st.spinner("回測中…"):
+                st.session_state["cu_res"] = custom.run(
+                    custom.parse_codes(spec), start, end, "none" if mode == "買進持有" else "monthly", float(cap))
+                st.session_state["cu_key"] = (spec, str(start), str(end), mode, float(cap))
+        except ValueError as e:
+            st.warning(str(e))
+            return
+        except Exception as e:
+            st.error("回測失敗：" + common.scrub(e))
+            return
+    res = st.session_state.get("cu_res")
+    if not res:
+        common.empty("填好代號和日期後按開始回測。")
+        return
+    key = (spec, str(start), str(end), mode, float(cap))
+    if st.session_state.get("cu_key") != key:
+        st.caption("上面的條件已改，下面還是上一次的結果。")
+    if res["missing"]:
+        st.warning("期間內沒有行情，已略過：" + "、".join(res["missing"]))
+    labels = [("strategy", "自選（扣成本）"), ("pool", "自選（不扣成本）"), ("etf", paper.ETF)]
+    p = res["perf"].get("strategy") or {}
+    common.kpis([
+        ("總報酬", common.signed_html((1 + res["daily"]["strategy"]).prod() - 1, 2), "扣成本"),
+        ("年化", common.signed_html(p.get("cagr")), "不到 20 個交易日不算" if not p else ""),
+        ("Sharpe", common.plain(p.get("sharpe"), 2), ""),
+        ("最大回落", common.pct(p.get("mdd")), f"{p.get('mdd_days', '—')} 個交易日沒回到高點" if p else ""),
+        ("期末資產", f"{res['nav'].iloc[-1]:,.0f}", "元"),
+    ])
+    common.nav_chart(res["daily"], labels, "累積淨值（起點 = 1）")
+    common.cmp_table(res["daily"], res["perf"], labels)
+    st.markdown("**目標權重**")
+    common.weight_table(res["weights"])
+    st.caption(common.cost_line(res) + "。不扣成本的那條是同一組目標權重買進持有。")
 
 
 def _reports() -> None:
@@ -444,10 +490,14 @@ labels = {p: f"{c['name']}（{p.stem}）" for p, c in cfgs.items()}
 trials = _trials()
 common.page_title("策略", f"{len(paths)} 個設定檔・嘗試紀錄 {len(trials)} 筆")
 
-section = common.segmented("區塊", ["回測比較", "參數微調", "線上試跑", "嘗試紀錄", "策略清單", "現有報告"],
+section = common.segmented("區塊", ["回測比較", "自選股回測", "參數微調", "線上試跑", "嘗試紀錄", "策略清單"],
                            "回測比較", key="strat_section", label_visibility="collapsed")
 if section == "回測比較":
     _compare(sig, paths, labels)
+    with st.expander("存檔的 HTML 報告"):
+        _reports()
+elif section == "自選股回測":
+    _custom()
 elif section == "參數微調":
     _variants(sig, paths, labels)
 elif section == "線上試跑":
@@ -464,5 +514,3 @@ elif section == "策略清單":
         column_config={"停損": st.column_config.NumberColumn(format="percent"),
                        "目標波動": st.column_config.NumberColumn(format="percent")})
     st.caption("欄位說明在 strategy.py 檔頭的 docstring。")
-elif section == "現有報告":
-    _reports()

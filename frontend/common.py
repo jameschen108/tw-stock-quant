@@ -14,6 +14,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 import analyst
+import custom
 import daily
 import outlook
 import paper
@@ -473,3 +474,41 @@ def chart(fig) -> None:
 
 def preview_html(path: Path) -> None:
     st.iframe(path, height=760)
+
+
+# ---------------------------------------------------------------- 回測結果
+
+NAV_COLOR = {"自選（扣成本）": C_STRAT, "自選（不扣成本）": C_POOL,
+             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF}
+
+
+def weight_table(weights: pd.Series) -> None:
+    names = custom.names_of(list(weights.index))
+    df = pd.DataFrame({"代號": list(weights.index), "名稱": [names.get(c, "") for c in weights.index],
+                       "目標權重": weights.values})
+    table(styled(df, fmt={"目標權重": "{:.1%}"}), hide_index=True)
+
+
+def cmp_table(daily: pd.DataFrame, perf: dict, labels: list[tuple[str, str]]) -> None:
+    rows = []
+    for key, label in labels:
+        p = perf.get(key) or {}
+        rows.append({"組合": label, "總報酬": (1 + daily[key]).prod() - 1, "年化": p.get("cagr"),
+                     "波動": p.get("vol"), "Sharpe": p.get("sharpe"), "最大回落": p.get("mdd")})
+    df = pd.DataFrame(rows)
+    table(styled(df, fmt={"總報酬": "{:+.1%}", "年化": "{:+.1%}", "波動": "{:.1%}", "Sharpe": "{:.2f}",
+                          "最大回落": "{:.1%}"}, signed=["總報酬", "年化"]), hide_index=True)
+
+
+def nav_chart(daily: pd.DataFrame, labels: list[tuple[str, str]], title: str, height: int = 380) -> None:
+    nav = (1 + daily).cumprod()
+    named = {label: nav[key] for key, label in labels}
+    chart(line_fig(nav.index, named, title, {k: NAV_COLOR[k] for k in named}, height))
+
+
+def cost_line(res: dict) -> str:
+    t = res["trades"]
+    blocked = [f"{r['exe']:%Y-%m-%d} 未成交：{'、'.join(r['blocked'])}" for _, r in t.iterrows() if r["blocked"]]
+    line = (f"期末資產 {res['nav'].iloc[-1]:,.0f} 元・手續費 {t['fees'].sum():,.0f}・證交稅 {t['tax'].sum():,.0f}・"
+            f"成交 {len(t)} 次")
+    return line + ("・" + "；".join(blocked) if blocked else "")

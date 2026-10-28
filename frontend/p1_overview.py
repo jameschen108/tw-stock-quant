@@ -1,4 +1,4 @@
-"""總覽：今天要看什麼。觀察名單、提醒、模型選股、財報季、多策略模擬摘要。"""
+"""總覽：今天要看什麼。觀察名單、提醒、模型選股、財報季。"""
 import json
 import sys
 from pathlib import Path
@@ -11,7 +11,6 @@ sys.path[:0] = [str(_HERE), str(_HERE.parent)]
 
 import common
 import daily
-import paper
 
 WATCH = daily.WATCHLIST
 OL_NAME = {"short": "短期", "mid": "中期", "long": "長期"}
@@ -22,16 +21,17 @@ def _reload_watchlist():
 
 
 def _watch_frame(rows: list[dict]) -> pd.DataFrame:
-    return pd.DataFrame([{
+    """提醒和新公布已經列在「需要注意」，外資持股、融資餘額的水位在個股頁，這裡只留變化。"""
+    df = pd.DataFrame([{
         "代號": r.get("code"), "名稱": r.get("name") or "",
         "收盤": r.get("close"), "1日": r.get("ret_1d"), "5日": r.get("ret_5d"),
         "短期": r.get("ol_short") or "—", "中期": r.get("ol_mid") or "—", "長期": r.get("ol_long") or "—",
         "綜合分數": r.get("comp"), "分數變化": r.get("comp_chg"),
-        "外資持股%": r.get("foreign_pct"), "外資5日(點)": r.get("foreign_5d"),
-        "融資(張)": r.get("margin_bal"), "融資5日": r.get("margin_5d"),
-        "法人5日(張)": r.get("insti_5d"),
-        "提醒": len(r.get("alerts") or []), "新公布": len(r.get("events") or []),
+        "外資5日(點)": r.get("foreign_5d"), "融資5日": r.get("margin_5d"), "法人5日(張)": r.get("insti_5d"),
     } for r in rows])
+    if not pd.to_numeric(df["分數變化"], errors="coerce").fillna(0).any():
+        df = df.drop(columns="分數變化")  # 和上次同一天時全是 0
+    return df
 
 
 def _attention(rows: list[dict]) -> None:
@@ -57,14 +57,14 @@ def _watch_table(rows: list[dict]) -> None:
     sty = common.styled(
         df,
         fmt={"收盤": "{:,.2f}", "1日": "{:+.2%}", "5日": "{:+.2%}", "綜合分數": "{:.0f}", "分數變化": "{:+.0f}",
-             "外資持股%": "{:.2f}", "外資5日(點)": "{:+.2f}", "融資(張)": "{:,.0f}", "融資5日": "{:+.1%}",
-             "法人5日(張)": "{:+,.0f}"},
+             "外資5日(點)": "{:+.2f}", "融資5日": "{:+.1%}", "法人5日(張)": "{:+,.0f}"},
         signed=["1日", "5日", "分數變化", "外資5日(點)", "融資5日", "法人5日(張)"],
         labels=["短期", "中期", "長期"])
     ev = common.table(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key="watch_tbl",
                       column_config={"綜合分數": st.column_config.ProgressColumn(
                           "綜合分數", min_value=0, max_value=100, format="%d")})
-    st.caption("點一列打開個股頁。綜合分數是全市場百分位；分數變化、提醒、新公布都是和上次 daily.py 執行時比。")
+    st.caption("點一列打開個股頁。綜合分數是全市場百分位；分數變化是和上次 daily.py 執行時比，"
+               "外資、融資、法人都是近 5 日變化。")
     sel = ev.selection.rows if ev and ev.selection else []
     if sel:
         common.goto_stock(str(df.iloc[sel[0]]["代號"]))
@@ -131,32 +131,6 @@ def _season(ss, cur, ind) -> None:
                                    signed=["營收年增中位數%", "毛利率年增中位數(點)"]), hide_index=True)
 
 
-def _strategies(rows: list[dict]) -> None:
-    if not rows:
-        common.empty("還沒有 data/paper/strat_summary.json。")
-        return
-    cards = []
-    for x in rows:
-        rn = x.get("regime_now")
-        reg = "" if not rn else common.badge(
-            f"{'均線上' if rn.get('above') else '均線下'} {common.pct(rn.get('gap'))}",
-            "bull" if rn.get("above") else "bear")
-        has = "ret" in x
-        body = (f"<li>累積 {common.signed_html(x.get('ret'), 2)}，0050 {common.signed_html(x.get('etf'), 2)}，"
-                f"同池 {common.signed_html(x.get('pool'), 2)}</li>"
-                f"<li>最大回落 {common.pct(x.get('mdd'), 2)}，現金 {common.pct(x.get('cash_pct'), 0)}，"
-                f"出場 {x.get('exits', 0)} 次</li>") if has else \
-            f"<li>本期目標 {len(x.get('targets') or [])} 檔，訊號日 {common.esc(x.get('signal_date'))}，等進場</li>"
-        expo = common.pct(x.get("target_exposure"), 0).lstrip("+")
-        tags = reg + common.badge("起點 " + str(x.get("start")), "muted") + common.badge(f"{x.get('n_periods')} 期", "muted")
-        cards.append(
-            f'<div class="card"><div class="hd"><b>{common.esc(x.get("name"))}</b>'
-            f'<span class="badge muted">曝險 {expo}</span></div>'
-            f'<div>{tags}</div><ul>{body}</ul></div>')
-    st.markdown(f'<div class="cgrid">{"".join(cards)}</div>', unsafe_allow_html=True)
-    st.page_link("p4_paper.py", label="持股明細與每期紀錄", icon=":material/arrow_forward:")
-
-
 def _editor() -> None:
     st.caption("寫入 watchlist.txt（一行一個代號，# 之後是註解）。這是介面上唯一會改的設定檔，"
                "存檔不會動到 data/daily_state.json。")
@@ -185,7 +159,6 @@ with st.spinner("整理觀察名單與財報季…"):
     rows = common.cached_watch(sig, codes, prev_json) if codes else []
     ss, cur, ind = common.cached_season(sig, codes)
     got = common.cached_picks(sig)
-strats = paper.load_strategy_summaries()
 
 status = common.load_status()
 prev_asof = (json.loads(prev_json).get("asof") if prev_json else None) or "—"
@@ -197,8 +170,7 @@ n_bull = sum(1 for r in rows for k in OL_NAME if r.get(f"ol_{k}") == "看漲")
 n_picks = 0 if not got or got[1] is None else len(got[1])
 common.kpis([
     ("觀察名單", f"{len(rows)} 檔", f"看漲標籤 {n_bull} 個（短中長期合計）"),
-    ("提醒", f"{n_alert} 則", "漲跌 7%、分數 15 分、外資 1 點、融資 15%、標籤改變", n_alert > 0),
-    ("新公布", f"{n_event} 則", "月營收、季財報、重大訊息"),
+    ("提醒 / 新公布", f"{n_alert} / {n_event} 則", "漲跌、分數、籌碼、標籤變化 / 營收、財報、重訊", n_alert + n_event > 0),
     ("財報季", f"{ss.get('reported', 0):,} / {ss.get('expected', 0):,}" if ss else "—",
      f"{ss.get('quarter')}，距期限 {ss.get('days_to_deadline')} 天" if ss else "不在財報季"),
     ("模型選股", f"{n_picks} 檔", "短中長期都看漲"),
@@ -213,13 +185,11 @@ if rows:
 else:
     common.empty("觀察名單是空的，到下方「編輯觀察名單」加入代號。")
 
-section = common.segmented("區塊", ["模型選股", "財報季", "多策略模擬", "編輯觀察名單"], "模型選股",
+section = common.segmented("區塊", ["模型選股", "財報季", "編輯觀察名單"], "模型選股",
                            key="home_section", label_visibility="collapsed")
 if section == "模型選股":
     _picks(got)
 elif section == "財報季":
     _season(ss, cur, ind)
-elif section == "多策略模擬":
-    _strategies(strats)
 elif section == "編輯觀察名單":
     _editor()

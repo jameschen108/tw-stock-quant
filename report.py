@@ -26,7 +26,9 @@ from build_panel import OUT
 from composite import GROUPS
 from factors import FACTORS
 from fetch_chips import load_chips, load_margin, load_qfii
+from matrix import stock_matrix
 from outlook import stock_outlook
+from patterns import stock_patterns
 from public_data import snapshots
 
 REPORTS = Path(__file__).parent / "reports"
@@ -314,7 +316,9 @@ def events_section(code: str, asof: pd.Timestamp) -> list:
             for r in ev.itertuples()]
 
 
-def build_facts(code: str, asof: pd.Timestamp, hit_by_label: bool = False) -> tuple[dict, dict]:
+def build_facts(code: str, asof: pd.Timestamp, extended: bool = False) -> tuple[dict, dict]:
+    """extended 只給報告用：outlook 附各標籤勝率、加訊號矩陣章節。analyst.stock_facts 也是 llm_trader 的輸入，
+    預設不加，避免前向實驗前後條件不一致。"""
     price, px = price_section(code, asof)
     rev, rv = revenue_section(code, asof)
     fin, fn = fin_section(code, asof)
@@ -337,8 +341,10 @@ def build_facts(code: str, asof: pd.Timestamp, hit_by_label: bool = False) -> tu
                          "估值請用 valuation 的 pe_ttm、pb（以市值計算）")
     facts = {"code": code, "asof": price["date"], "price": price, "revenue": rev, "financials": fin,
              "scores": score, "institutional_flows": chips,
-             "margin_foreign_holding": credit, "outlook": stock_outlook(code, asof, hit_by_label),"announcements": ann,
+             "margin_foreign_holding": credit, "outlook": stock_outlook(code, asof, extended), "announcements": ann,
              "corporate_actions": actions, "notes": notes}
+    if extended:
+        facts["signal_matrix"] = stock_matrix(facts, stock_patterns(code))
     return facts, {"px": px, "rv": rv, "fn": fn, "trend": trend, "chips": ch, "ann": an}
 
 
@@ -381,6 +387,9 @@ SYSTEM = """你是台股研究助理，替一位個人投資者整理單一個�
   每個附上持有期與樣本外歷史：同標籤平均產業中性超額、和中性組比較；可靠度是「弱」或「不可靠」的要明說。
   若某期間看漲組的歷史平均超額和中性組差不到 0.5 個百分點，要說明這個看漲標籤的區分力有限（主要是看跌有區分力）。
   勝率要用 hit_pct_by_label_oos 和其他標籤比較，不能單獨說成「勝率不到一半所以不好」。這是模型的統計分組，不要寫成你自己的看法或保證。
+- signal_matrix 是技術、籌碼、基本面、綜合四個維度依固定規則判斷的多 / 空 / 中性、一致數與矛盾清單。
+  提到維度方向、一致或矛盾時只能照 dimensions、agreement、contradictions 寫；不要自己另外比對出新的矛盾，
+  也不要從一致數推論股價會漲或跌。
 
 summary 3~4 句；positives、negatives 各 2~4 點；watch_items 2~3 點，寫成下次財報或月營收可以檢查的具體項目。用繁體中文。"""
 
@@ -794,7 +803,7 @@ def main():
 
     if not a.asof and (w := freshness_warning()):
         print(f"⚠ {w}")
-    facts, series = build_facts(a.code, asof, hit_by_label=True)
+    facts, series = build_facts(a.code, asof, extended=True)
     narrative = None if a.no_llm else llm_narrative(facts)
     if narrative:
         facts["narrative"] = narrative

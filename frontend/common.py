@@ -64,6 +64,7 @@ div[data-testid="stMetricValue"] {font-size: 1.45rem;}
 .ptitle h1 {font-size:1.9rem; margin:0; padding:0;}
 .ptitle .sub {opacity:.65; font-size:.9rem;}
 .kgrid {display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:.7rem; margin:.3rem 0 1rem;}
+@media (min-width: 1200px) {.kgrid {grid-template-columns:repeat(var(--cols, 6), minmax(0, 1fr));}}
 .kpi {border:1px solid rgba(128,128,128,.22); border-radius:.8rem; padding:.7rem .95rem; background:rgba(128,128,128,.05);}
 .kpi .t {font-size:.78rem; opacity:.68;}
 .kpi .v {font-size:1.5rem; font-weight:650; line-height:1.35; font-variant-numeric:tabular-nums;}
@@ -151,7 +152,9 @@ def kpis(items: list[tuple], ) -> None:
         acc = " accent" if len(it) > 3 and it[3] else ""
         cells.append(f'<div class="kpi{acc}"><div class="t">{esc(t)}</div><div class="v">{v}</div>'
                      f'<div class="s">{esc(s)}</div></div>')
-    st.markdown(f'<div class="kgrid">{"".join(cells)}</div>', unsafe_allow_html=True)
+    # 寬螢幕一列最多 7 張，張數多時平均分列（8 張排 4+4，不要 7+1）
+    cols = len(cells) if len(cells) <= 7 else math.ceil(len(cells) / math.ceil(len(cells) / 7))
+    st.markdown(f'<div class="kgrid" style="--cols:{max(cols, 1)}">{"".join(cells)}</div>', unsafe_allow_html=True)
 
 
 def table(data, **kw):

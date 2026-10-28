@@ -396,10 +396,12 @@ def _peers(sig: str, code: str):
         common.empty(raw["error"])
         return
     n_peers = raw.get("n_peers")
-    tags = common.badge(raw.get("peer_level") or "", "muted") + (common.badge(f"{n_peers} 家", "muted") if n_peers else "")
+    level = raw.get("peer_level") or ""
+    tags = common.badge(f"同 TEJ {level} {raw.get('industry_code') or ''}".strip() if level else "", "muted") \
+        + (common.badge(f"{n_peers} 家", "muted") if n_peers else "")
     st.markdown(f"**{common.esc(raw.get('industry_name') or '')}**　{tags}", unsafe_allow_html=True)
     rows = raw.get("rows") or []
-    rename = {"code": "代號", "name": "名稱", "產業名稱": "產業", "mcap_億": "市值(億)", "close": "收盤",
+    rename = {"code": "代號", "name": "名稱", "產業名稱": "主產業", "mcap_億": "市值(億)", "close": "收盤",
               "rev_yoy": "營收年增%", "rev_yoy_3m": "近3月年增%", "gross_margin": "毛利率%", "roe": "ROE%",
               "pe": "本益比", "pb": "股價淨值比", "composite_pct": "綜合分數"}
     if rows:
@@ -419,7 +421,9 @@ def _peers(sig: str, code: str):
         sel = ev.selection.rows if ev and ev.selection else []
         if sel and str(show.iloc[sel[0]]["代號"]) != code:
             common.goto_stock(str(show.iloc[sel[0]]["代號"]))
-        st.caption("點一列打開那檔個股。")
+        mixed = show["主產業"].nunique() > 1 if "主產業" in show else False
+        st.caption("點一列打開那檔個股。" + ("同業依 TEJ 子產業分組，主產業不同的公司也可能在同一組。" if mixed and
+                                       level == "子產業" else ""))
     med = raw.get("median") or {}
     if med:
         st.caption("同業中位數：" + "、".join(f"{rename.get(k, k)} {common.plain(v, 1)}"

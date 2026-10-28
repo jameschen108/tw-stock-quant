@@ -491,7 +491,12 @@ def _trial_log() -> None:
     if not rows:
         common.empty("還沒有嘗試紀錄。")
         return
-    df = pd.DataFrame([{"時間": r.get("time"), "代號": r.get("id"), "名稱": r.get("name"), "雜湊": r.get("hash"),
+    def _variant(rid) -> str:  # robust.py 的變體代號是「策略__標籤」
+        tag = str(rid or "").partition("__")[2]
+        return _variant_label(tag, {}) if tag else ""
+
+    df = pd.DataFrame([{"時間": pd.to_datetime(r.get("time")).strftime("%Y-%m-%d %H:%M") if r.get("time") else None,
+                        "名稱": r.get("name"), "變體": _variant(r.get("id")), "代號": r.get("id"),
                         "月 Sharpe": r.get("sharpe_m"), "超額 Sharpe": r.get("sharpe_ex"),
                         "年化": r.get("cagr")} for r in rows]).iloc[::-1]
     srs = df["月 Sharpe"].dropna()
@@ -502,6 +507,7 @@ def _trial_log() -> None:
     ])
     common.table(common.styled(df, fmt={"月 Sharpe": "{:.3f}", "超額 Sharpe": "{:.3f}", "年化": "{:+.1%}"},
                                signed=["年化"]), hide_index=True)
+    st.caption("訊號矩陣那幾筆沒有 Sharpe，只是讓 Deflated Sharpe 的「試過幾次」算進去。")
 
 
 def _custom() -> None:
@@ -590,11 +596,16 @@ elif section == "嘗試紀錄":
     _trial_log()
 elif section == "策略清單":
     common.table(pd.DataFrame([{
-        "代號": p.stem, "名稱": c["name"], "說明": c.get("description") or "", "持股": c["select"]["n"],
-        "排序": c["select"]["sort"], "權重": c["position"]["weighting"],
-        "大盤濾網": c["risk"]["regime"] if c["risk"]["regime"] != "none" else "",
-        "停損": c["risk"]["stop_loss"] or None, "目標波動": c["risk"]["target_vol"] or None}
+        "代號": p.stem, "名稱": c["name"], "持股": c["select"]["n"],
+        "排序": _SORT_LABEL.get(c["select"]["sort"], c["select"]["sort"]),
+        "權重": _WEIGHT_LABEL.get(c["position"]["weighting"], c["position"]["weighting"]).split("（")[0],
+        "大盤濾網": "" if c["risk"]["regime"] == "none" else
+        f"{_INDEX_LABEL.get(c['risk']['regime_index'], c['risk']['regime_index'])} {c['risk']['regime_ma']} 日均線"
+        + ("，每天判斷" if c["risk"]["regime_freq"] == "daily" else ""),
+        "停損": c["risk"]["stop_loss"] or None, "目標波動": c["risk"]["target_vol"] or None,
+        "說明": c.get("description") or ""}  # 說明很長，放最後才不會把參數擠出畫面
         for p, c in cfgs.items()]), hide_index=True,
-        column_config={"停損": st.column_config.NumberColumn(format="percent"),
+        column_config={"大盤濾網": st.column_config.TextColumn(width="medium"),
+                       "停損": st.column_config.NumberColumn(format="percent"),
                        "目標波動": st.column_config.NumberColumn(format="percent")})
     st.caption("欄位說明在 strategy.py 檔頭的 docstring。")

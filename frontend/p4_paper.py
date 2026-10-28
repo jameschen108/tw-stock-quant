@@ -112,12 +112,13 @@ def _multi(rows: list[dict]) -> None:
 
 def _ledger() -> None:
     if not paper.STRAT_LEDGER.exists():
-        common.empty("還沒有 strat_ledger.parquet。")
+        common.empty("還沒有每期紀錄。")
         return
     led = pd.read_parquet(paper.STRAT_LEDGER)
+    title = {x["id"]: x.get("name") or x["id"] for x in paper.load_strategy_summaries()}
     c1, c2, c3 = st.columns([2, 2, 1])
     names = sorted(led["strategy"].dropna().unique())
-    pick = c1.multiselect("策略", names, default=names)
+    pick = c1.multiselect("策略", names, default=names, format_func=lambda k: title.get(k, k))
     date_labels = [str(pd.Timestamp(d).date()) for d in sorted(led["signal_date"].dropna().unique())]
     chosen = c2.multiselect("訊號日", date_labels, default=date_labels[-1:])
     only_pick = c3.toggle("只看選進組合的", value=True)
@@ -126,15 +127,20 @@ def _ledger() -> None:
         view = view[view["signal_date"].isin({pd.Timestamp(d) for d in chosen})]
     if only_pick and "in_pick" in view.columns:
         view = view[view["in_pick"].astype(bool)]
-    cols = [c for c in ["signal_date", "strategy", "hash", "code", "weight", "in_pick", "pick_order", "regime_on"]
-            if c in view.columns]
-    show = view[cols].sort_values([c for c in ["strategy", "signal_date", "pick_order"] if c in cols]).rename(columns={
-        "signal_date": "訊號日", "strategy": "策略", "hash": "設定雜湊", "code": "代號", "weight": "權重",
-        "in_pick": "選進組合", "pick_order": "順序", "regime_on": "濾網開"})
-    if "訊號日" in show:
-        show["訊號日"] = pd.to_datetime(show["訊號日"]).dt.strftime("%Y-%m-%d")
+    view = view.sort_values([c for c in ["strategy", "signal_date", "pick_order"] if c in view.columns])
+    names_of = custom.names_of(sorted(view["code"].astype(str).unique()))
+    show = pd.DataFrame({"訊號日": pd.to_datetime(view["signal_date"]).dt.strftime("%Y-%m-%d"),
+                         "策略": view["strategy"].map(lambda k: title.get(k, k)),
+                         "代號": view["code"].astype(str), "名稱": view["code"].astype(str).map(names_of),
+                         "權重": view["weight"]})
+    if "pick_order" in view:
+        show["順序"] = view["pick_order"] + 1  # 存的是 0 起算
+    if not only_pick and "in_pick" in view:
+        show["選進組合"] = view["in_pick"].map({True: "是", False: ""})
+    if "regime_on" in view and not view["regime_on"].all():  # 沒有濾網的策略永遠是 True，全 True 就不列
+        show["大盤濾網"] = view["regime_on"].map({True: "通過", False: "未通過，降倉"})
     common.table(common.styled(show, fmt={"權重": "{:.2%}", "順序": "{:.0f}"}), hide_index=True)
-    st.caption(f"{len(show):,} 列。紀錄只追加不改寫；設定改過會用新的雜湊重新起算。")
+    st.caption(f"{len(show):,} 列。紀錄只追加不改寫；策略設定改過會重新起算。")
 
 
 def _strat_nav() -> None:

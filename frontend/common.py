@@ -41,15 +41,21 @@ CSS = """
 [data-testid="stBottomBlockContainer"] {max-width: 1440px; margin: 0 auto;}
 h1, h2, h3 {letter-spacing: .01em;}
 div[data-testid="stMetricValue"] {font-size: 1.45rem;}
-.sbar {display:flex; flex-wrap:wrap; gap:.35rem; align-items:center; font-size:.8rem; margin:0;}
-[data-testid="stHorizontalBlock"]:has(.sbar) {align-items:center; margin-bottom:.15rem;}
-[data-testid="stHorizontalBlock"]:has(.sbar) [data-testid="stButton"] button {
+.sbar {display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; font-size:.78rem; margin:0; opacity:.75;}
+.sbar b {font-weight:600;}
+.sbar i {font-style:normal; opacity:.45;}
+.sbar + .disc {margin:.1rem 0 0;}
+[data-testid="stHorizontalBlock"]:has(.sbar) {align-items:center; margin-bottom:.4rem;}
+.fresh {padding:.4rem .8rem; border-radius:.5rem; font-size:.85rem; background:rgba(234,179,8,.12);
+        border:1px solid rgba(234,179,8,.45);}
+[data-testid="stHorizontalBlock"]:has(.fresh) {align-items:center; margin-bottom:.4rem;}
+[data-testid="stHorizontalBlock"]:has(.sbar) [data-testid="stButton"] button,
+[data-testid="stHorizontalBlock"]:has(.fresh) [data-testid="stButton"] button {
   border: 1px solid rgba(128,128,128,.22); background: transparent; min-height: 1.7rem;
-  padding: .05rem .7rem; font-size: .8rem; border-radius: 999px;}
+  padding: .05rem .7rem; font-size: .8rem; border-radius: 999px; white-space: nowrap;}
 .chip {padding:.12rem .6rem; border-radius:999px; background:rgba(128,128,128,.10);
        border:1px solid rgba(128,128,128,.22); white-space:nowrap;}
 .chip b {font-weight:600;}
-.chip.ok {border-color:rgba(24,160,88,.55);}
 .chip.warn {background:rgba(234,179,8,.14); border-color:rgba(234,179,8,.55);}
 .chip.bad {background:rgba(229,72,77,.14); border-color:rgba(229,72,77,.55);}
 .disc {font-size:.76rem; opacity:.62; margin:.15rem 0 .6rem;}
@@ -210,6 +216,10 @@ def _run_job(title: str, args: list[str]) -> None:
                 box.update(label=f"{title} 結束碼 {code}", state="error")
 
 
+def _open_jobs() -> None:
+    st.session_state.jobs_open = True
+
+
 def _close_jobs() -> None:
     st.session_state.jobs_open = False
 
@@ -241,36 +251,35 @@ def header() -> None:
         v = stt.get(k)
         return "—" if v is None else f"{v * 100:.1f}%"
 
-    chips = [
-        f'<span class="chip"><b>價格</b> {esc(stt.get("last_price_date") or "—")}</span>',
-        f'<span class="chip"><b>因子</b> {esc(stt.get("factor_date") or "—")}</span>',
-        f'<span class="chip"><b>更新</b> {esc(run_at)}</span>',
-        f'<span class="chip"><b>營收新鮮度</b> {share("rev_fresh_share")}</span>',
-        f'<span class="chip"><b>財報新鮮度</b> {share("fin_fresh_share")}</span>',
-    ]
+    items = [f'<b>價格</b> {esc(stt.get("last_price_date") or "—")}',
+             f'<b>因子</b> {esc(stt.get("factor_date") or "—")}',
+             f'<b>更新</b> {esc(run_at)}',
+             f'<b>營收</b> {share("rev_fresh_share")}',
+             f'<b>財報</b> {share("fin_fresh_share")}']
+    # 正常時只有一行小字；有狀況才加標籤
     if ok is None:
-        chips.append('<span class="chip warn">沒有更新紀錄</span>')
-    elif ok and not problems:
-        chips.append('<span class="chip ok">更新正常</span>')
-    else:
-        chips.append(f'<span class="chip bad">更新有問題{f"（{len(problems)}）" if problems else ""}</span>')
+        items.append('<span class="chip warn">沒有更新紀錄</span>')
+    elif problems or not ok:
+        items.append(f'<span class="chip bad">更新有問題{f"（{len(problems)}）" if problems else ""}</span>')
+    last = stt.get("last_price_date") or ""
     for d, why in sorted(update.CLOSED.items()):
-        chips.append(f'<span class="chip">休市 {esc(d[5:])} {esc(why)}</span>')
-    fresh = report.freshness_warning()
-    if fresh:
-        chips.append('<span class="chip warn">資料可能過舊</span>')
-    bar, act = st.columns([1, 0.08], gap="small", vertical_alignment="center")
-    bar.markdown(f'<div class="sbar">{"".join(chips)}</div>', unsafe_allow_html=True)
-    with act:
-        if st.button("執行", type="tertiary", key="open_jobs_btn", help="更新資料或重算。只在這個視窗裡跑固定指令"):
-            st.session_state.jobs_open = True
-    st.markdown(f'<div class="disc">{DISCLAIMER}</div>', unsafe_allow_html=True)
+        if d > last:  # 價格日之後的休市才解釋得了為什麼沒有新行情
+            items.append(f'<span class="chip">休市 {esc(d[5:])} {esc(why)}</span>')
+    bar, act = st.columns([1, 0.16], gap="small", vertical_alignment="center")
+    bar.markdown(f'<div class="sbar">{"<i>·</i>".join(items)}</div>'
+                 f'<div class="disc">{DISCLAIMER}</div>', unsafe_allow_html=True)
+    act.button("更新 / 重算", type="tertiary", key="open_jobs_btn", on_click=_open_jobs, width="stretch",
+               help="更新資料或重算。只在這個視窗裡跑固定指令")
     if st.session_state.get("jobs_open"):
         _jobs_dialog()
     if problems or ok is False:
         st.error("更新問題：" + ("；".join(problems) if problems else "fetch_ok 為 false"))
+    fresh = report.freshness_warning()
     if fresh:
-        st.warning(fresh)
+        msg, btn = st.columns([1, 0.16], gap="small", vertical_alignment="center")
+        msg.markdown(f'<div class="fresh">{esc(fresh.removesuffix("。分析前建議先跑 uv run update.py"))}。</div>',
+                     unsafe_allow_html=True)
+        btn.button("更新資料", key="fresh_update_btn", on_click=_open_jobs, width="stretch")
 
 
 # ---------------------------------------------------------------- 格式

@@ -29,7 +29,7 @@ def test_atr_stop_and_support_resistance():
     assert r["stop"] == pytest.approx(path[-1] - 4.0, abs=0.02)
     assert r["support_src"] == "21 日線"
     assert r["support"] == pytest.approx(path[-21:].mean(), abs=0.01)
-    assert (r["resistance_src"], r["resistance"]) == ("頸線（M 頭）", 130.0)
+    assert (r["resistance_src"], r["resistance"]) == ("M 頭的頸線", 130.0)
 
 
 def test_band_coverage_near_68_pct_for_normal_returns():

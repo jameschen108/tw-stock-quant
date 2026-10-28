@@ -119,7 +119,7 @@ def latest(w: dict, uni: pd.DataFrame, pats: pd.DataFrame | None = None) -> pd.D
         for r in pats[pats["pattern"].isin(PATTERN_LEVELS)].itertuples():
             lv = json.loads(r.levels)
             for k in PATTERN_LEVELS[r.pattern]:
-                extra.setdefault(r.code, {})[f"{k}（{r.name}）"] = lv[k]
+                extra.setdefault(r.code, {})[f"{r.name}的{k}"] = lv[k]
     stop = (c - ATR_MULT * atr).loc[last] / base
     vq = np.ceil(vol.loc[last].where(uni.loc[last]).rank(pct=True) * 5).clip(1, 5)   # 同 calibrate 的波動分組
     rows = []

@@ -29,6 +29,8 @@ from fetch_chips import load_chips, load_margin, load_qfii
 from matrix import stock_matrix
 from outlook import stock_outlook
 from patterns import stock_patterns
+from refprice import DISCLAIMER as REF_DISCLAIMER
+from refprice import stock_refprice
 from public_data import snapshots
 
 REPORTS = Path(__file__).parent / "reports"
@@ -344,7 +346,11 @@ def build_facts(code: str, asof: pd.Timestamp, extended: bool = False) -> tuple[
              "margin_foreign_holding": credit, "outlook": stock_outlook(code, asof, extended), "announcements": ann,
              "corporate_actions": actions, "notes": notes}
     if extended:
-        facts["signal_matrix"] = stock_matrix(facts, stock_patterns(code))
+        # 形態與參考價只存最新資料日；asof 是過去某天時不放，避免拿今天的價位描述過去
+        pats, ref = stock_patterns(code), stock_refprice(code)
+        facts["patterns"] = pats if pats.get("date") == facts["asof"] else {}
+        facts["reference_prices"] = ref if ref.get("date") == facts["asof"] else {}
+        facts["signal_matrix"] = stock_matrix(facts, facts["patterns"])
     return facts, {"px": px, "rv": rv, "fn": fn, "trend": trend, "chips": ch, "ann": an}
 
 
@@ -358,15 +364,17 @@ NARRATIVE_SCHEMA = {
         "negatives": {"type": "array", "items": {"type": "string"}},
         "watch_items": {"type": "array", "items": {"type": "string"}},
         "outlook": {"type": "string"},
+        "technical": {"type": "string"},
     },
-    "required": ["summary", "outlook", "positives", "negatives", "watch_items"],
+    "required": ["summary", "outlook", "technical", "positives", "negatives", "watch_items"],
     "additionalProperties": False,
 }
 
 SYSTEM = """你是台股研究助理，替一位個人投資者整理單一個股的數據摘要。
 只能使用使用者提供的 JSON 事實表，不得引用表外的新聞、產業知識或數字；表裡沒有的就說資料不足。
 每個論點都要帶出具體數字與期別（例如「2026-09 營收年增 54.6%」）。
-不要給目標價或具體的價格、報酬數字預測。看漲 / 看跌只能用 outlook 的模型標籤（見下方規則），不要自己另外判斷方向。
+不要給目標價，也不要自己推算任何價格或報酬預測；價位只能引用 patterns、reference_prices 裡程式算好的數字。
+看漲 / 看跌只能用 outlook 的模型標籤（見下方規則），不要自己另外判斷方向。
 
 寫法規則：
 - 只用中文名稱，不要寫 JSON 欄位名（rev_accel、ep、pe_ttm 這類）或英文單字（median 寫成中位數）；因子名稱用 factors 裡的 desc。
@@ -390,6 +398,13 @@ SYSTEM = """你是台股研究助理，替一位個人投資者整理單一個�
 - signal_matrix 是技術、籌碼、基本面、綜合四個維度依固定規則判斷的多 / 空 / 中性、一致數與矛盾清單。
   提到維度方向、一致或矛盾時只能照 dimensions、agreement、contradictions 寫；不要自己另外比對出新的矛盾，
   也不要從一致數推論股價會漲或跌。
+- patterns 是程式依固定規則偵測、最新一天成立中的價格形態。只能引用表中的形態名稱、成立日與關鍵價位，
+  不要自己從價格判斷其他形態。每個形態都要附可靠度；「歷史上不可靠」或「弱」的要明說不能當買賣理由。
+- reference_prices 是公式算出的參考價（支撐 / 壓力、停損參考、統計波動區間），一律稱「參考價」或「參考區間」，
+  不可以叫目標價，也不要自己另外算價格。統計區間要說是常態假設下約 68% 的範圍，並附歷史覆蓋率
+  （有同波動分組的就用那個）；停損參考要附歷史上碰到的比例。
+- technical 欄位 2~4 句：依序寫訊號矩陣的一致數與矛盾、成立中的形態（附可靠度）、參考價。
+  patterns 或 reference_prices 是空的就說這個時點沒有資料。
 
 summary 3~4 句；positives、negatives 各 2~4 點；watch_items 2~3 點，寫成下次財報或月營收可以檢查的具體項目。用繁體中文。"""
 
@@ -576,7 +591,7 @@ figcaption{font-size:13px;color:var(--text2);margin:0 0 4px 4px}svg{width:100%;h
 .line{fill:none;stroke-width:2;stroke-linejoin:round}.s1{stroke:var(--s1)}.s2{stroke:var(--s2)}.s3{stroke:var(--s3)}
 table{border-collapse:collapse;width:100%;font-size:14px}th,td{padding:5px 8px;text-align:right;
 border-bottom:1px solid var(--grid)}th:first-child,td:first-child{text-align:left}th{color:var(--text2);font-weight:500}
-.wrap{overflow-x:auto}
+.wrap{overflow-x:auto}table.txt th,table.txt td{text-align:left}
 .bar-pct{display:inline-block;height:8px;border-radius:4px;background:var(--s1);vertical-align:middle;margin-right:6px}
 ul{padding-left:20px}.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px}
 .box{background:var(--panel);border-radius:8px;padding:4px 16px}
@@ -600,6 +615,56 @@ def pct_bar(p):
     if p is None:
         return "—"
     return f'<span class="bar-pct" style="width:{p * 60:.0f}px"></span>{p * 100:.0f}'
+
+
+def technical_html(facts: dict, row) -> str:
+    """訊號矩陣、成立中的形態、參考價三個表；事實表沒有這些章節（非報告用）時回傳空字串。"""
+    e = html.escape
+    mx, pt, rp = facts.get("signal_matrix"), facts.get("patterns") or {}, facts.get("reference_prices") or {}
+    if not mx:
+        return ""
+    ag = mx["agreement"]
+    m_rows = "".join(row(k, f'<b>{v["direction"] or "資料不足"}</b>', e(v["basis"])) for k, v in mx["dimensions"].items())
+    con = "".join(f"<li>{e(c)}</li>" for c in mx["contradictions"]) or "<li>沒有</li>"
+    hist = mx.get("history_oos_same_net_3dims") or {}
+    hist_txt = "、".join(f'{h} {v["mean_ex_pct"]:+.2f}%（勝率 {v["hit_pct"]:.0f}%）'
+                         for h, v in hist.items() if isinstance(v, dict) and v.get("mean_ex_pct") is not None)
+    out = f"""<h2>技術面：訊號矩陣、形態與參考價</h2>
+<p>偏多 {ag["多"]}、偏空 {ag["空"]}、中性 {ag["中性"]}{f'、資料不足 {ag["資料不足"]}' if ag["資料不足"] else ""}，一致數 <b>{ag["net"]:+d}</b>。
+{f'樣本外三維一致數同為 {hist["net_3dims"]:+d} 的股票，之後平均產業中性超額：{hist_txt}。' if hist_txt else ""}</p>
+<div class="cols"><div class="wrap"><table class="txt"><tr><th>維度</th><th>方向</th><th>依據</th></tr>{m_rows}</table></div>
+<div class="box"><h3>矛盾清單</h3><ul>{con}</ul></div></div>
+<p class="muted">{e(mx["method"])}。</p>"""
+    if pt.get("patterns"):
+        def _h(x):
+            return "—" if not x or x.get("mean_ex_pct") is None else f'{x["mean_ex_pct"]:+.2f}%（勝率 {x["hit_pct"]:.0f}%）'
+        p_rows = "".join(row(e(x["name"]), x["side"], x["formed"],
+                             "、".join(f"{k} {fmt_num(v)}" for k, v in x["levels"].items()),
+                             e(x["reliability"] or "—"), _h(x["history_oos"])) for x in pt["patterns"])
+        out += f"""<h3>成立中的形態（{pt["date"]}）</h3>
+<div class="wrap"><table class="txt"><tr><th>形態</th><th>方向</th><th>成立日</th><th>關鍵價位</th><th>可靠度</th>
+<th>樣本外 20 日平均超額</th></tr>{p_rows}</table></div>
+<p class="muted">{e(pt["note"])}。</p>"""
+    elif pt:
+        out += f'<p class="muted">{pt["date"]} 沒有成立中的形態。</p>'
+    if not pt and not rp:
+        out += '<p class="muted">形態與參考價只存最新資料日，這個時點沒有。</p>'
+    if rp:
+        sr, sp, vb = rp["support_resistance"], rp["stop_reference"], rp["volatility_bands"]
+        src = lambda x: f'{fmt_num(x["price"])}（{e(x["source"])}）' if x["price"] is not None else "—"
+        hit = "、".join(f"{k} {v:.0f}%" for k, v in sp["history_oos_hit_pct"].items() if v is not None)
+        bands = "".join(row(f"統計區間 {h}", f'{fmt_num(b["low"])} ~ {fmt_num(b["high"])}',
+                            f'歷史覆蓋率 {fmt_num(b["history_oos_inside_pct"], 1)}%'
+                            + (f'（同波動分組 {fmt_num(b["history_oos_inside_pct_same_vol"], 1)}%）'
+                               if b.get("history_oos_inside_pct_same_vol") is not None else ""))
+                        for h, b in vb.items() if isinstance(b, dict))
+        out += f"""<h3>參考價（{rp["date"]}，收盤 {fmt_num(rp["close"])}）</h3>
+<div class="wrap"><table class="txt"><tr><th>項目</th><th>價位</th><th>說明</th></tr>
+{row("支撐", src(sr["support"]), "低於現價最近的技術價位")}{row("壓力", src(sr["resistance"]), "高於現價最近的技術價位")}
+{row("停損參考", fmt_num(sp["price"]), f'{e(sp["rule"])}；ATR {fmt_num(sp["atr14"])}；歷史上碰到的比例 {hit}')}
+{bands}</table></div>
+<p class="muted">{e(vb["note"])}。{e(rp["disclaimer"])}</p>"""
+    return out
 
 
 def render(facts: dict, series: dict, narrative: dict | None) -> str:
@@ -666,6 +731,7 @@ def render(facts: dict, series: dict, narrative: dict | None) -> str:
     if narrative:
         narr = (f'<p>{e(narrative["summary"])}</p>'
                 + (f'<p><b>模型看法：</b>{e(narrative["outlook"])}</p>' if narrative.get("outlook") else "")
+                + (f'<p><b>技術面：</b>{e(narrative["technical"])}</p>' if narrative.get("technical") else "")
                 + f'<div class="cols">'
                 f'<div class="box pos"><h3>正面</h3><ul>{"".join(f"<li>{e(x)}</li>" for x in narrative["positives"])}</ul></div>'
                 f'<div class="box neg"><h3>負面</h3><ul>{"".join(f"<li>{e(x)}</li>" for x in narrative["negatives"])}</ul></div>'
@@ -738,7 +804,8 @@ def render(facts: dict, series: dict, narrative: dict | None) -> str:
 <p class="muted">{ol["date"]} 的訊號。{e(ol["method"])}。{e(ol["hit_pct_note"])}。訊號組成見 outlook.py。</p>
 <div class="wrap"><table><tr><th>期間</th><th>標籤</th><th>百分位</th><th>持有期</th>
 <th>歷史平均超額 看漲 / 中性 / 看跌</th><th>同標籤勝率</th><th>可靠度</th></tr>{o_rows}</table></div>"""
-    title = f'{p["name"]} {facts["code"]}'
+    tech_html = technical_html(facts, row)
+    title =f'{p["name"]} {facts["code"]}'
     return f"""<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{e(title)} 個股報告</title>
 <style>{CSS}</style></head><body><main>
@@ -749,6 +816,7 @@ def render(facts: dict, series: dict, narrative: dict | None) -> str:
 
 <h2>摘要</h2>{narr}
 {outlook_html}
+{tech_html}
 
 <h2>圖表</h2><div class="charts">{"".join(charts)}</div>
 
@@ -789,7 +857,8 @@ def render(facts: dict, series: dict, narrative: dict | None) -> str:
 {f'<p class="muted">近期除權息 / 減資 / 變更面額：</p><div class="wrap"><table><tr><th>日期</th><th>類型</th><th>前收盤</th><th>參考價</th></tr>{events}</table></div>' if events else ""}
 
 <p class="disc">本報告由程式依 TEJ 財報、證交所 / 櫃買中心行情、法人買賣超與公開資訊觀測站重大訊息自動產生，僅供學術研究。
-看漲 / 看跌是模型依歷史統計的分組，回測與因子分數為歷史統計，不代表未來報酬。</p>
+看漲 / 看跌是模型依歷史統計的分組，回測與因子分數為歷史統計，不代表未來報酬。
+{e(REF_DISCLAIMER)}</p>
 </main></body></html>"""
 
 

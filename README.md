@@ -134,6 +134,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `composite.py` | 四組因子合成綜合分數，樣本內／外回測 |
 | `moat.py`、`stars.py`、`outlook.py` | 護城河分級、星等、看漲看跌標籤 |
 | `technicals.py`、`regime.py` | 技術面訊號與大盤多空、市場狀態指標 |
+| `patterns.py`、`refprice.py`、`matrix.py` | 價格形態、參考價（支撐壓力、停損、統計區間）、四維訊號矩陣，各附歷史校準；只進報告與個股頁 |
 | `strategy.py`、`robust.py`、`strategies/*.toml` | 策略回測與穩健性檢查，策略以 TOML 設定 |
 | `paper.py` | 模擬持股，每月記錄前 N 名並追蹤報酬 |
 | `mine.py` | 自選股即時模擬：自己挑股票，從最新資料日起往後記錄並追蹤（可月調） |

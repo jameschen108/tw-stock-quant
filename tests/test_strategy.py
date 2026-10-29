@@ -144,3 +144,30 @@ def test_simulate_with_no_prices_after_signal(market):
     rets = market()
     sig = fixed_signals({DAYS[-1] + pd.Timedelta(days=3): pd.Series(1.0, index=["1101"])})
     assert S.simulate(zero_cost_cfg(), pd.DataFrame(), rets, fixed=sig) is None
+
+
+def test_simulate_records_each_fill(market):
+    rets = market()
+    sig = fixed_signals({DAYS[10]: pd.Series(0.5, index=["1101", "1102"]),
+                         DAYS[40]: pd.Series(1.0, index=["1102"])})
+    f = S.simulate(zero_cost_cfg(), pd.DataFrame(), rets, fixed=sig)["fills"]
+    assert list(f.columns) == S.FILL_COLS
+    first = f[f["date"] == DAYS[11]]
+    assert set(first["code"]) == {"1101", "1102"} and set(first["side"]) == {"買"}
+    assert set(first["reason"]) == {"新買進"}
+    second = f[f["date"] == DAYS[41]]
+    sold = second[second["side"] == "賣"]
+    assert list(sold["code"]) == ["1101"] and list(sold["reason"]) == ["換股出場"]
+    assert (f["amount"] > 0).all()
+
+
+def test_stop_loss_exit_is_recorded_as_fill(market):
+    px = make_prices()
+    px.loc[(px["code"] == "1101") & (px["date"] == DAYS[15]), "ret"] = -0.09   # 單日跌 9%（未達跌停），觸發停損
+    rets = market(px)
+    cfg = zero_cost_cfg()
+    cfg["risk"] = {**cfg["risk"], "stop_loss": 0.05, "stop_type": "fixed"}
+    res = S.simulate(cfg, pd.DataFrame(), rets, fixed=fixed_signals({DAYS[10]: pd.Series(1.0, index=["1101"])}))
+    f = res["fills"]
+    stop = f[f["reason"] == "停損"]
+    assert len(stop) == 1 and stop["code"].iloc[0] == "1101" and stop["side"].iloc[0] == "賣"

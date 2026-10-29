@@ -104,6 +104,19 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
 
+## 頁：主題
+
+導覽列在模擬持股和分析師問答之間。
+
+| 功能 | 來源 |
+|---|---|
+| 主題排行：1／5／20／60 日報酬、相對 0050 的超額、20 日上漲比例、成交值占比與倍數，可選排序 | `themes.summarize`；成分在 `themes.toml` |
+| 主題指數走勢（20／60／120 日，可多選，加 0050） | `themes.theme_returns`、`themes.index_levels` |
+| 點一列看成分股報酬，再點一檔跳到個股頁 | `themes.members` |
+
+- 只讀近一年多的行情（`SINCE`），用 `st.cache_resource` 快取，跟著 `update.py` 結果失效。
+- 成分股手動挑選，有事後偏差，頁尾註明只看當下相對強弱，不拿來回測。
+
 ## 頁 5（可選）：分析師問答
 
 `analyst.py` 已有工具和對話迴圈：`analyst.ask(client, messages)`，工具清單在 `analyst.TOOLS`。可以做成聊天頁。

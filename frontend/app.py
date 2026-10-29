@@ -18,6 +18,7 @@ page = st.navigation([
     st.Page("p2_stock.py", title="個股", icon=":material/query_stats:", url_path="stock"),
     st.Page("p3_strategy.py", title="策略", icon=":material/science:", url_path="strategy"),
     st.Page("p4_paper.py", title="模擬持股", icon=":material/account_balance_wallet:", url_path="paper"),
+    st.Page("p6_themes.py", title="主題", icon=":material/category:", url_path="themes"),
     st.Page("p5_analyst.py", title="分析師問答", icon=":material/forum:", url_path="analyst"),
 ], position="top")
 common.header()

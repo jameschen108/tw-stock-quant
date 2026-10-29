@@ -185,23 +185,29 @@ def _job_commands() -> list[tuple[str, str, list[str]]]:
 
 
 def _run_job(title: str, args: list[str]) -> None:
-    import fcntl
     import os
     import subprocess
     lock_path = ROOT / "logs" / ".frontend_job.lock"
     lock_path.parent.mkdir(exist_ok=True)
     with open(lock_path, "a+", encoding="utf-8") as lock:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == "nt":                          # Windows 沒有 fcntl，用 msvcrt 鎖檔案開頭 1 byte
+                import msvcrt
+                lock.seek(0)
+                msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             st.warning("已經有一個指令在跑。")
             return
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"                # 子程式輸出中文時，Windows 預設編碼會讀成亂碼
         key = env.get("ANTHROPIC_API_KEY", "")
         with st.status(f"{title}…", expanded=True) as box:
             proc = subprocess.Popen(args, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                    text=True, env=env)
+                                    text=True, encoding="utf-8", errors="replace", env=env)
             lines: list[str] = []
             slot = st.empty()
             assert proc.stdout is not None
@@ -497,7 +503,8 @@ def preview_html(path: Path) -> None:
 # ---------------------------------------------------------------- 回測結果
 
 NAV_COLOR = {"自選（扣成本）": C_STRAT, "自選（不扣成本）": C_POOL,
-             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF}
+             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF,
+             "這套規則": C_STRAT, "不加風險規則": "#14b8a6"}
 
 
 def weight_table(weights: pd.Series) -> None:

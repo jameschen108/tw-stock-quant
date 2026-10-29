@@ -457,30 +457,137 @@ def _llm_replay(model: str) -> None:
     st.caption("各批都是 20 日報酬。三批方向不一致時，代表 LLM 的篩選沒有穩定的效果。")
 
 
+_RISK_INDEX = {"none": "不用", "0050": "0050 跌破均線", "ew": "全市場等權指數跌破均線"}
+_STOP_TYPE = {"trailing": "從進場後高點算", "fixed": "從進場價算"}
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def _source_codes(_sig: str, source: str) -> list[str]:
+    return mine.source_codes(source)
+
+
+def _mine_create() -> None:
+    """建立自選組合：名單（自己輸入或從來源帶入）、加權方式、選用的風險規則。"""
+    sources = [None, *mine.SOURCES, *(f"strategies/{p.name}" for p in sorted((mine.ROOT / "strategies").glob("*.toml")))]
+    c1, c2, c3 = st.columns([1.5, 3, 1.2])
+    name = c1.text_input("組合名稱", key="mn_name")
+    source = c2.selectbox("名單來源", sources, format_func=mine.source_label, key="mn_source",
+                          help="從策略帶入只用它的選股條件；倉位與風險規則用下面的設定")
+    cap = c3.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="mn_cap")
+    if source is None:
+        spec = st.text_input("股票代號（可加 :權重）", "2330,2317,2454", key="mn_spec")
+    else:
+        try:
+            codes = _source_codes(common.data_sig(), source)
+            names = custom.names_of(codes) if codes else {}
+            st.caption(f"目前 {len(codes)} 檔：" + "、".join(f"{c} {names.get(c, '')}" for c in codes[:30])
+                       + ("…" if len(codes) > 30 else "") if codes else "這個來源目前沒有股票。")
+        except Exception as e:
+            st.warning("讀不到名單：" + common.scrub(e))
+    event = source in mine.EVENT_SOURCES
+    if event:
+        st.caption("財報公布後追價：驚喜分數在最近 12 個月公布事件的最高 10%、上市且成交量不在最低 20% 的股票，"
+                   "公布後隔一個交易日收盤買進，持有期滿賣出；每天收盤後名單有變就調整。"
+                   "2018–2025 回測與 2026 年樣本外都贏同條件的一般股票，但沒有贏 0050（規則見 surprise.py）。")
+    weightings = list(mine.WEIGHTINGS) if source is None else [k for k in mine.WEIGHTINGS if k != "manual"]
+    c1, c2, c3 = st.columns([2, 1, 2], vertical_alignment="bottom")
+    weighting = c1.selectbox("加權方式", weightings, format_func=mine.WEIGHTINGS.get, key=f"mn_w_{source is None}")
+    max_weight = c2.number_input("單檔上限", 0.05, 1.0, 1.0, 0.05, format="%.2f", key="mn_mw",
+                                 help="0–1；1 = 不限，超過的分給其他股票，都到上限就留現金")
+    monthly = False if event else c3.checkbox("每月照規則重選並調回權重" if source else "每月調回目標權重", key="mn_monthly")
+
+    risk = {}
+    if st.toggle("加上風險規則（停損、停利、大盤濾網…）", key="mn_risk_on"):
+        frac = "0–1，例 0.10 = 10%；0 = 不用"
+        c1, c2, c3, c4 = st.columns(4)
+        risk["stop_loss"] = c1.number_input("個股停損", 0.0, 1.0, 0.0, 0.01, format="%.2f", key="mn_sl", help=frac)
+        risk["stop_type"] = c2.selectbox("停損怎麼算", list(_STOP_TYPE), format_func=_STOP_TYPE.get, key="mn_st")
+        risk["take_profit"] = c3.number_input("個股停利", 0.0, 10.0, 0.0, 0.05, format="%.2f", key="mn_tp",
+                                              help="從進場價算；" + frac)
+        risk["max_hold_days"] = int(c4.number_input("持有滿幾個交易日出場", 0, 1000, 0, 5, key="mn_hd",
+                                                    help="0 = 不用；賣掉的到下次調整才會再買"))
+        c1, c2, c3, c4 = st.columns(4)
+        idx = c1.selectbox("大盤濾網", list(_RISK_INDEX), format_func=_RISK_INDEX.get, key="mn_rg")
+        ma = int(c2.number_input("均線天數", 5, 400, 200, 10, key="mn_ma"))
+        daily = c3.selectbox("多久判斷一次", ["daily", "monthly"], key="mn_rf",
+                             format_func={"daily": "每天", "monthly": "每次調整時"}.get)
+        off = c4.number_input("跌破時留多少部位", 0.0, 1.0, 0.0, 0.1, key="mn_off", help="0–1；站回均線再買回")
+        if idx != "none":
+            risk.update(regime="ma", regime_index=idx, regime_ma=ma, regime_freq=daily, regime_off=float(off))
+        c1, c2, c3, _ = st.columns(4)
+        risk["dd_limit"] = c1.number_input("資產回落門檻", 0.0, 1.0, 0.0, 0.01, format="%.2f", key="mn_dd",
+                                           help="組合從高點回落超過就降部位；" + frac)
+        risk["dd_exposure"] = c2.number_input("回落後留多少部位", 0.0, 1.0, 0.0, 0.1, key="mn_de",
+                                              help="0–1；到下次調整才恢復")
+        risk["target_vol"] = c3.number_input("目標年化波動", 0.0, 1.0, 0.0, 0.01, format="%.2f", key="mn_tv",
+                                             help="持股過去 60 日波動太大就降部位；" + frac)
+        st.caption("每天收盤判斷，隔一個交易日收盤成交（跌停賣不掉就再等一天）；規則建立後不能改，要換就建新組合。")
+
+    settings = dict(monthly=monthly, capital=float(cap), weighting=weighting, max_weight=float(max_weight),
+                    risk=risk, source=source)
+    c1, c2, c3, _ = st.columns([1.2, 1.2, 1.2, 2], vertical_alignment="bottom")
+    start = c1.date_input("回測起日", pd.Timestamp.today() - pd.DateOffset(years=3), key="mn_bt_start",
+                          min_value=pd.Timestamp("2012-01-01"), max_value=pd.Timestamp.today())
+    if c2.button("先回測過去", icon=":material/history:", key="mn_bt"):
+        try:
+            w = custom.parse_codes(spec) if source is None else None
+            with st.spinner("用同一套規則回頭重播…"):
+                st.session_state["mn_bt_res"] = (repr((spec if source is None else None, start, settings)),
+                                                 mine.backtest(w, start, **settings))
+        except ValueError as e:
+            st.warning(str(e))
+        except Exception as e:
+            st.error("回測失敗：" + common.scrub(e))
+    if c3.button("建立", icon=":material/add:", key="mn_create"):
+        if _is_llm_book(name.strip()):
+            st.warning("這個名稱是 LLM 實驗用的，請換一個。")
+            return
+        try:
+            w = custom.parse_codes(spec) if source is None else None
+            sig = mine.create(name.strip(), w, **settings)
+            st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
+            st.session_state.pop("mn_bt_res", None)
+            st.rerun()
+        except ValueError as e:
+            st.warning(str(e))
+        except Exception as e:
+            st.error("建立失敗：" + common.scrub(e))
+    if "mn_bt_res" in st.session_state:
+        key, res = st.session_state["mn_bt_res"]
+        if key != repr((spec if source is None else None, start, settings)):
+            st.caption("設定改過了，下面是上一次設定的回測；按「先回測過去」重算。")
+        _mine_backtest(res, source)
+
+
+def _mine_backtest(res: dict, source: str | None) -> None:
+    """建立前回測的結果：同一套規則、不加風險規則、同組等權、0050。"""
+    d, perf = res["daily"].copy(), dict(res["perf"])
+    labels = [("strategy", "這套規則")]
+    if res.get("base"):
+        d["base"], perf["base"] = res["base"]["daily"]["strategy"].reindex(d.index).fillna(0), res["base"]["perf"]["strategy"]
+        labels.append(("base", "不加風險規則"))
+    labels += [("pool", "同組等權"), ("etf", paper.ETF)]
+    nv = res["nav"]
+    st.markdown(f"**回測 {nv.index[0]:%Y-%m-%d} → {nv.index[-1]:%Y-%m-%d}**（{len(res['signals'])} 次訊號・"
+                f"{mine.REBALANCE[res['rebalance']]}）")
+    common.nav_chart(d, labels, "累積淨值（起點 = 1）", 320)
+    common.cmp_table(d, perf, labels)
+    t = res["trades"]
+    note = (f"這套規則與不加風險規則都扣成本（手續費 {t['fees'].sum():,.0f}、證交稅 {t['tax'].sum():,.0f} 元）；"
+            "同組等權是每個訊號日的名單等權、不扣成本、漲停也買得到。每個訊號日只用當時的資料選股和算權重。")
+    if not source or source == "watchlist":
+        note += "注意：名單是現在挑的，回測過去有後見之明，只能參考。"
+    st.caption(note)
+
+
 def _mine() -> None:
-    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；要看過去用策略頁的「自選股回測」）。"
-               "隔一個交易日收盤進場。月調組合在新月份由 update.py 調回目標權重，其餘只在你改持股時調整。"
+    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；建立前可按「先回測過去」看同一套規則以前的表現）。"
+               "隔一個交易日收盤進場。月調組合在新月份、財報驚喜組合在名單有變時由 update.py 記新一期，其餘只在你改持股時調整。"
                "紀錄只追加，不改寫。")
     meta = {k: v for k, v in mine.load_meta().items() if not v["archived"]}
     own, llm = [k for k in meta if not _is_llm_book(k)], [k for k in meta if _is_llm_book(k)]
     with st.expander("建立新組合", expanded=not own):
-        c1, c2, c3 = st.columns([1.5, 3, 1.2])
-        name = c1.text_input("組合名稱", key="mn_name")
-        spec = c2.text_input("股票代號（可加 :權重）", "2330,2317,2454", key="mn_spec")
-        cap = c3.number_input("本金（元）", 10_000, 100_000_000, 1_000_000, 10_000, key="mn_cap")
-        monthly = st.checkbox("每月調回目標權重", key="mn_monthly")
-        if st.button("建立", icon=":material/add:", key="mn_create"):
-            if _is_llm_book(name.strip()):
-                st.warning("這個名稱是 LLM 實驗用的，請換一個。")
-            else:
-                try:
-                    sig = mine.create(name.strip(), custom.parse_codes(spec), monthly, float(cap))
-                    st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
-                    st.rerun()
-                except ValueError as e:
-                    st.warning(str(e))
-                except Exception as e:
-                    st.error("建立失敗：" + common.scrub(e))
+        _mine_create()
     if not own:
         common.empty("還沒有自己的組合，用上面的「建立新組合」建一個。")
     # LLM 實驗帳本主要在「LLM 決策」看，這裡預設不列，免得一進來就選到別人的組合
@@ -494,9 +601,10 @@ def _mine() -> None:
     cur = sigs[max(sigs)]
     common.kpis([
         ("建立日", common.esc(m["created"]), f"本金 {m['capital']:,.0f} 元"),
-        ("調整", "每月調回" if m["rebalance"] == "monthly" else "只在改動時", f"{len(sigs)} 次訊號"),
+        ("調整", mine.REBALANCE[m["rebalance"]], f"{len(sigs)} 次訊號"),
         ("最近訊號", f"{max(sigs):%Y-%m-%d}", "隔一個交易日收盤成交"),
     ])
+    st.caption("規則：" + "；".join(mine.describe(m)))
     st.markdown("**目前目標權重**")
     common.weight_table(cur)
     with st.spinner("重算淨值…"):
@@ -567,6 +675,13 @@ def _mine_edit(name: str, cur: pd.Series) -> None:
     with st.expander("改持股 / 封存"):
         spec = st.text_input("新的持股（代號:權重）", ",".join(f"{c}:{w * 100:.4g}" for c, w in cur.items()),
                              key=f"mn_edit_{name}")
+        m = mine.load_meta().get(name, {})
+        if m.get("weighting", "manual") != "manual":
+            st.caption(f"這個組合用「{mine.WEIGHTINGS[m['weighting']]}」，只看代號，權重會重算。")
+        if m.get("source") and m["rebalance"] == "monthly":
+            st.caption("下個月會照名單來源重選，這裡的修改只維持到那時。")
+        if m["rebalance"] == "events":
+            st.caption("事件名單下次有變動時會照規則重記，這裡的修改只維持到那時。")
         c1, c2 = st.columns(2)
         if c1.button("記錄新持股", key=f"mn_save_{name}"):
             try:

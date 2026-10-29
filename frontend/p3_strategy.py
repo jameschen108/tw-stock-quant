@@ -369,6 +369,11 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
         dd_exposure = c5.number_input("回落後留多少部位", min_value=0.0, max_value=1.0,
                                       value=float(risk["dd_exposure"]), step=0.1, key=f"tr_{pre}_de",
                                       help=frac + "；到下次換股才恢復")
+        c1, c2, _, _, _ = st.columns(5)
+        take_profit = c1.number_input("個股停利", min_value=0.0, max_value=10.0, value=float(risk["take_profit"]),
+                                      step=0.05, format="%.2f", key=f"tr_{pre}_tp", help=frac + "；從進場價算，每天檢查")
+        max_hold_days = c2.number_input("持有滿幾個交易日出場", min_value=0, value=int(risk["max_hold_days"]), step=5,
+                                        key=f"tr_{pre}_hd", help="從第一次買進算；這期不再買回")
 
         with st.expander("交易成本與成交時點（通常不用改）"):
             c1, c2, c3, c4, c5 = st.columns(5)
@@ -392,7 +397,8 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
                            exposure=float(exposure), min_trade=int(min_trade))
     cfg["risk"].update(regime=regime, regime_index=regime_index, regime_ma=int(regime_ma), regime_freq=regime_freq,
                        regime_off=float(regime_off), target_vol=float(target_vol), stop_loss=float(stop_loss),
-                       stop_type=stop_type, dd_limit=float(dd_limit), dd_exposure=float(dd_exposure))
+                       stop_type=stop_type, dd_limit=float(dd_limit), dd_exposure=float(dd_exposure),
+                       take_profit=float(take_profit), max_hold_days=int(max_hold_days))
     cfg["cost"].update(fee_rate=float(fee_rate), fee_discount=float(fee_discount), min_fee=int(min_fee), tax=float(tax))
     cfg["lag"] = int(lag)
     with st.spinner("回測中…"):

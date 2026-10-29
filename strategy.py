@@ -28,6 +28,8 @@
              regime_freq = "daily"：大盤濾網每天判斷；跌破均線就把股票降到 regime_off，站回均線就買回這期名單
              dd_limit（例 0.15）：資產從高點回落超過這個幅度，股票降到 dd_exposure（預設 0），到下次換股才恢復，
                恢復時高點重設為當時資產
+             take_profit（例 0.30）：個股從進場價漲超過這個幅度就賣（停利），賣掉的這期不再買回，同 stop_loss
+             max_hold_days（例 60）：個股持有滿這麼多個交易日就賣（從第一次買進算，續抱不重算），這期不再買回
   [cost]     fee_rate、fee_discount（券商折扣，0.28 = 2.8 折）、min_fee（每筆最低手續費，元）、tax（賣出證交稅）
   可用欄位：outlook.parquet（short/mid/long 的 _pct、_label）、composite_scores（comp_equal、rev_mom、quality、
   value、trend）、factors_monthly（close、avg_value、mcap、industry、rev_yoy、roe、ep、bp…）、vol_60d（日報酬 60 日標準差）
@@ -63,7 +65,8 @@ from build_panel import OUT
 from report import CSS, svg_lines
 
 ROOT = Path(__file__).parent
-LATE = {"position": {"min_trade"}, "risk": {"stop_loss", "stop_type", "regime_freq", "dd_limit", "dd_exposure"}}
+LATE = {"position": {"min_trade"}, "risk": {"stop_loss", "stop_type", "regime_freq", "dd_limit", "dd_exposure",
+                                             "take_profit", "max_hold_days"}}
 TRIALS = OUT / "strategy" / "trials.jsonl"
 RESULTS = OUT / "strategy" / "results"
 REPORTS = ROOT / "reports"
@@ -78,7 +81,8 @@ DEFAULTS = {"start": "2011-01-01", "capital": 100_000,
             "position": {"weighting": "equal", "max_weight": 1.0, "max_industry": 1.0, "exposure": 1.0, "min_trade": 0},
             "risk": {"regime": "none", "regime_index": "0050", "regime_ma": 200, "regime_off": 0.0,
                      "target_vol": 0.0, "vol_window": 60,
-                     "stop_loss": 0.0, "stop_type": "trailing", "regime_freq": "monthly", "dd_limit": 0.0, "dd_exposure": 0.0},
+                     "stop_loss": 0.0, "stop_type": "trailing", "regime_freq": "monthly", "dd_limit": 0.0, "dd_exposure": 0.0,
+                     "take_profit": 0.0, "max_hold_days": 0},
             "cost": {"fee_rate": 0.001425, "fee_discount": 1.0, "min_fee": 20, "tax": 0.003}}
 
 
@@ -242,7 +246,7 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
     """逐日持有：收盤更新市值 → 執行前一天的待辦（賣出 / 降曝險 / 買回）→ 依收盤判斷出場規則，排到隔天。
     hold、st 原地更新；回傳（現金, 每日資產, 這段的手續費 / 稅 / 出場次數）。"""
     ex = {"fees": 0.0, "tax": 0.0, "exits": 0, "fills": []}
-    sell_q, scale_q, reenter = set(), None, False       # 待辦：要全賣的股票、要把部位降到幾成、要不要買回
+    sell_q, scale_q, reenter = {}, None, False          # 待辦：要全賣的股票（→ 原因）、要把部位降到幾成、要不要買回
     scale_why = ""
     stopped = set()
     navs = []
@@ -258,12 +262,14 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
             del hold[code]
             st["factor"].pop(code, None)
             st["peak"].pop(code, None)
+            st["age"].pop(code, None)
     for t, r in win.iterrows():
         for code in hold:
             g = 1 + (r.get(code) if pd.notna(r.get(code)) else 0.0)
             hold[code] *= g
             st["factor"][code] = st["factor"].get(code, 1.0) * g
             st["peak"][code] = max(st["peak"].get(code, 1.0), st["factor"][code])
+            st["age"][code] = st["age"].get(code, 0) + 1
         if sell_q or scale_q is not None or reenter:
             ok, up, down = _limits(t, r, prices.loc[t] if t in prices.index else pd.Series(dtype=float))
             if scale_q is not None:
@@ -279,12 +285,11 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
                     scale_q = None
             for code in list(sell_q):
                 if code not in hold:
-                    sell_q.discard(code)
+                    sell_q.pop(code)
                 elif ok(code) and not down(code):
-                    sell(code, hold[code], "停損")
+                    sell(code, hold[code], sell_q.pop(code))
                     stopped.add(code)
                     ex["exits"] += 1
-                    sell_q.discard(code)
             if reenter:
                 total = cash + sum(hold.values())
                 for code, wt in tw_full.sort_values(ascending=False).items():
@@ -303,6 +308,7 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
                     ex["fills"].append(_fill(t, code, "買", px, v, "大盤回升買回" if code not in hold else "大盤回升加碼"))
                     if code not in hold:
                         st["factor"][code] = st["peak"][code] = 1.0
+                        st["age"][code] = 0
                     hold[code] = hold.get(code, 0.0) + v
                 reenter = False
         nav_t = cash + sum(hold.values())
@@ -312,7 +318,12 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
             for code in hold:
                 base = 1.0 if risk["stop_type"] == "fixed" else st["peak"][code]
                 if st["factor"][code] / base <= 1 - risk["stop_loss"]:
-                    sell_q.add(code)
+                    sell_q.setdefault(code, "停損")
+        for code in hold:
+            if risk["take_profit"] > 0 and st["factor"][code] >= 1 + risk["take_profit"]:
+                sell_q.setdefault(code, "停利")
+            if risk["max_hold_days"] > 0 and st["age"].get(code, 0) >= risk["max_hold_days"]:
+                sell_q.setdefault(code, "持有期滿")
         if use_regime and risk["regime_freq"] == "daily":
             on = bool(st["above"].get(t, True))
             if st["regime_on"] and not on:
@@ -342,8 +353,9 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
                              filters=[("date", ">=", sigs[0])]).pivot(index="date", columns="code", values="close")
     risk = cfg["risk"]
     idx = regime_index(rets, risk) if risk["regime"] == "ma" else None
-    daily_mode = risk["stop_loss"] > 0 or risk["dd_limit"] > 0 or (risk["regime"] == "ma" and risk["regime_freq"] == "daily")
-    st = {"factor": {}, "peak": {}, "nav_peak": float(cfg["capital"]), "dd_out": False}
+    daily_mode = (risk["stop_loss"] > 0 or risk["dd_limit"] > 0 or risk["take_profit"] > 0 or risk["max_hold_days"] > 0
+                  or (risk["regime"] == "ma" and risk["regime_freq"] == "daily"))
+    st = {"factor": {}, "peak": {}, "age": {}, "nav_peak": float(cfg["capital"]), "dd_out": False}
     if idx is not None:
         ma = idx.rolling(risk["regime_ma"], min_periods=risk["regime_ma"]).mean()
         st["above"] = ~(idx < ma)                       # 均線還算不出來時視為多頭
@@ -426,6 +438,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             fills.append(_fill(exe, code, "買", px, v, "新買進" if code not in hold else "加碼"))
             if code not in hold:
                 st["factor"][code] = st["peak"][code] = 1.0
+                st["age"][code] = 0
             hold[code] = hold.get(code, 0.0) + v
             fees, traded = fees + f, traded + v
         trades.append({"signal": s, "exe": exe, "total": total, "n_hold": len(hold), "n_target": len(tw),

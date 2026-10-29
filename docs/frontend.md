@@ -86,7 +86,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 - `[select]`：sort、n、filters
 - `[position]`：weighting、max_weight、max_industry、min_trade
-- `[risk]`：regime、regime_freq、target_vol、stop_loss、dd_limit
+- `[risk]`：regime、regime_freq、target_vol、stop_loss、take_profit、max_hold_days、dd_limit
 - `[cost]`
 - `lag`
 

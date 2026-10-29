@@ -181,3 +181,33 @@ def test_score_weighting_favors_top_ranked():
     w = S.target_weights(pick, pos, "comp_equal", True)    # 由小到大選：分數低的先選、權重大
     assert w["lo"] > w["mid"] > w["hi"]
 
+
+def test_take_profit_sells_after_gain(market):
+    rets = market(make_prices({"1101": 0.02}))             # 每天 +2%，約 10 天漲超過 20%
+    cfg = zero_cost_cfg()
+    cfg["risk"] = {**cfg["risk"], "take_profit": 0.20}
+    res = S.simulate(cfg, pd.DataFrame(), rets, fixed=fixed_signals({DAYS[10]: pd.Series(0.5, index=["1101", "1102"])}))
+    assert "1101" not in res["hold"] and "1102" in res["hold"]
+    assert res["trades"]["exits"].iloc[0] == 1
+    assert res["fills"].query("side == '賣'")["reason"].tolist() == ["停利"]
+
+
+def test_max_hold_days_sells_after_n_days(market):
+    rets = market()
+    cfg = zero_cost_cfg()
+    cfg["risk"] = {**cfg["risk"], "max_hold_days": 5}
+    res = S.simulate(cfg, pd.DataFrame(), rets, fixed=fixed_signals({DAYS[10]: pd.Series(1.0, index=["1101"])}))
+    assert res["hold"] == {}
+    # 第 11 天成交，持有滿 5 天（第 16 天收盤判斷）→ 第 17 天收盤賣，之後都是現金
+    nav = res["nav"]
+    assert nav[DAYS[18]:].nunique() == 1
+    assert res["fills"].query("side == '賣'")["reason"].tolist() == ["持有期滿"]
+
+
+def test_new_risk_keys_keep_old_hash():
+    cfg = S.load_config(ROOT / "strategies" / "top30.toml")
+    old = {k: v for k, v in cfg["risk"].items() if k not in ("take_profit", "max_hold_days")}
+    h = S.config_hash(cfg)
+    cfg["risk"] = old
+    cfg["risk"].update(take_profit=0.0, max_hold_days=0)
+    assert S.config_hash(cfg) == h                         # 預設值不進雜湊，舊設定的嘗試紀錄不會重算

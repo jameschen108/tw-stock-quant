@@ -95,6 +95,28 @@ def _hero(facts: dict, px: pd.DataFrame) -> None:
         f'</div>', unsafe_allow_html=True)
 
 
+def _live(code: str, data_date: str) -> None:
+    """即時報價（只顯示，不進事實表與模型）。盤中由 fragment 每 10 秒重跑。"""
+    q = common.live_quotes((code,)).get(code)
+    if not q or q["last"] is None:
+        st.caption("查不到即時報價（證交所連不上，或這檔今天沒有交易）。")
+        return
+    when = f"{q['date']:%m-%d} {q['time']}" if q["date"] is not None else q["time"] or ""
+    vol = f"{q['volume']:,.0f} 張" if q["volume"] else "—"
+    common.kpis([
+        ("即時價" + ("（最佳買價）" if q["indicative"] else ""), common.num(q["last"]), when, True),
+        ("漲跌（對昨收）", common.signed_html(q["chg"], 2), f"昨收 {common.num(q['prev'])}"),
+        ("今日高 / 低", f"{common.num(q['high'])} / {common.num(q['low'])}", f"開盤 {common.num(q['open'])}"),
+        ("成交量", vol, f"買 {common.num(q['bid'])}・賣 {common.num(q['ask'])}"),
+        ("漲停 / 跌停", f"{common.num(q['limit_up'])} / {common.num(q['limit_down'])}"
+         if q["limit_up"] or q["limit_down"] else "無限制", "證交所公布"),
+    ])
+    note = "證交所即時報價，延遲約 5 秒" + ("，盤中每 10 秒自動更新" if common.live_every() else "")
+    if q["date"] is not None and q["date"] > pd.Timestamp(data_date):
+        note += f"。今天的行情晚上更新資料後才會進到上面的分數、標籤與圖表（目前到 {data_date}）"
+    st.caption(note + "。")
+
+
 # ---------------------------------------------------------------- 各區塊
 
 def _price(facts: dict, px: pd.DataFrame):
@@ -517,7 +539,9 @@ if isinstance(facts, dict) and facts.get("_error"):
     st.stop()
 
 _hero(facts, series.get("px"))
-section = common.segmented("區塊", SECTIONS, "價格", key="stock_section", label_visibility="collapsed")
+if asof.isoformat() == default_asof:                     # 時點回溯看的是過去，不放即時報價
+    st.fragment(run_every=common.live_every())(_live)(code, default_asof)
+section =common.segmented("區塊", SECTIONS, "價格", key="stock_section", label_visibility="collapsed")
 if section == "價格":
     _price(facts, series.get("px"))
     st.subheader("自訂區間報酬")

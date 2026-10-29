@@ -20,11 +20,16 @@ def _reload_watchlist():
     st.session_state.wl_text = WATCH.read_text(encoding="utf-8") if WATCH.exists() else ""
 
 
-def _watch_frame(rows: list[dict]) -> pd.DataFrame:
-    """提醒和新公布已經列在「需要注意」，外資持股、融資餘額的水位在個股頁，這裡只留變化。"""
+def _watch_frame(rows: list[dict], live: dict | None = None) -> pd.DataFrame:
+    """提醒和新公布已經列在「需要注意」，外資持股、融資餘額的水位在個股頁，這裡只留變化。
+    live：即時報價（realtime.quotes 的結果），有的話在收盤後面加即時價、今日漲跌、時間。"""
+    live = live or {}
     df = pd.DataFrame([{
         "代號": r.get("code"), "名稱": r.get("name") or "",
-        "收盤": r.get("close"), "1日": r.get("ret_1d"), "5日": r.get("ret_5d"),
+        "收盤": r.get("close"),
+        **({"即時價": (live.get(r.get("code")) or {}).get("last"), "今日漲跌": (live.get(r.get("code")) or {}).get("chg"),
+            "時間": (live.get(r.get("code")) or {}).get("time") or ""} if live else {}),
+        "1日": r.get("ret_1d"), "5日": r.get("ret_5d"),
         "短期": r.get("ol_short") or "—", "中期": r.get("ol_mid") or "—", "長期": r.get("ol_long") or "—",
         "綜合分數": r.get("comp"), "分數變化": r.get("comp_chg"),
         "外資5日(點)": r.get("foreign_5d"), "融資5日": r.get("margin_5d"), "法人5日(張)": r.get("insti_5d"),
@@ -53,18 +58,23 @@ def _attention(rows: list[dict]) -> None:
 
 
 def _watch_table(rows: list[dict]) -> None:
-    df = _watch_frame(rows)
+    """盤中由 fragment 每 10 秒重跑，只更新即時價那幾欄。"""
+    live = common.live_quotes(tuple(sorted({r.get("code") for r in rows if r.get("code")})))
+    df = _watch_frame(rows, live)
     sty = common.styled(
         df,
-        fmt={"收盤": "{:,.2f}", "1日": "{:+.2%}", "5日": "{:+.2%}", "綜合分數": "{:.0f}", "分數變化": "{:+.0f}",
+        fmt={"收盤": "{:,.2f}", "即時價": "{:,.2f}", "今日漲跌": "{:+.2%}", "1日": "{:+.2%}", "5日": "{:+.2%}",
+             "綜合分數": "{:.0f}", "分數變化": "{:+.0f}",
              "外資5日(點)": "{:+.2f}", "融資5日": "{:+.1%}", "法人5日(張)": "{:+,.0f}"},
-        signed=["1日", "5日", "分數變化", "外資5日(點)", "融資5日", "法人5日(張)"],
+        signed=["今日漲跌", "1日", "5日", "分數變化", "外資5日(點)", "融資5日", "法人5日(張)"],
         labels=["短期", "中期", "長期"])
     ev = common.table(sty, hide_index=True, on_select="rerun", selection_mode="single-row", key="watch_tbl",
                       column_config={"綜合分數": st.column_config.ProgressColumn(
                           "綜合分數", min_value=0, max_value=100, format="%d")})
     st.caption("點一列打開個股頁。綜合分數是全市場百分位；分數變化是和上次 daily.py 執行時比，"
-               "外資、融資、法人都是近 5 日變化。")
+               "外資、融資、法人都是近 5 日變化。"
+               + ("即時價、今日漲跌（對昨收）來自證交所即時報價，延遲約 5 秒" + ("，盤中每 10 秒自動更新" if common.live_every() else "")
+                  + "；只顯示，不進模型和提醒。" if live else "查不到即時報價（證交所連不上）。"))
     sel = ev.selection.rows if ev and ev.selection else []
     if sel:
         common.goto_stock(str(df.iloc[sel[0]]["代號"]))
@@ -181,7 +191,7 @@ _attention(rows)
 
 st.subheader("觀察名單")
 if rows:
-    _watch_table(rows)
+    st.fragment(run_every=common.live_every())(_watch_table)(rows)
 else:
     common.empty("觀察名單是空的，到下方「編輯觀察名單」加入代號。")
 

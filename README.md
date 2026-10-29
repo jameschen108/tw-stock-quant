@@ -141,7 +141,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `patterns.py`、`refprice.py`、`matrix.py` | 價格形態、參考價（支撐壓力、停損、統計區間）、四維訊號矩陣，各附歷史校準；只進報告與個股頁 |
 | `strategy.py`、`robust.py`、`strategies/*.toml` | 策略回測與穩健性檢查，策略以 TOML 設定 |
 | `paper.py` | 模擬持股，每月記錄前 N 名並追蹤報酬 |
-| `mine.py` | 自選股即時模擬：自己挑股票，從最新資料日起往後記錄並追蹤（可月調） |
+| `mine.py` | 自選股即時模擬：自己挑股票或從觀察名單、模型選股、策略帶入，從最新資料日起往後記錄並追蹤（可月調、可每月照規則重選）；可選加權方式與停損、停利、大盤濾網等風險規則 |
 | `custom.py` | 自選股模擬：自己挑股票、權重和起訖日回頭重播，對比 0050 |
 | `realtime.py` | 即時報價（證交所基本市況報導，上市上櫃，延遲約 5 秒）；只給個股頁、總覽觀察名單與自選組合顯示（盤中每 10 秒更新），不進計算與紀錄 |
 | `diagnose.py` | 拆解綜合分數輸給同池等權的原因 |

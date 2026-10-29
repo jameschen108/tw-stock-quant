@@ -232,20 +232,28 @@ def _limits(t: pd.Timestamp, r: pd.Series, p: pd.Series):
     return ok, up, down
 
 
+def _fill(t, code, side, px, v, why) -> dict:
+    """一筆成交紀錄。股數 = 金額 / 成交價（買進時金額本來就是整股；全部賣出時是當天市值，四捨五入到整數）。"""
+    return {"date": t, "code": code, "side": side, "price": float(px) if pd.notna(px) else np.nan,
+            "shares": int(round(v / px)) if pd.notna(px) and px > 0 else 0, "amount": float(v), "reason": why}
+
+
 def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_regime):
     """逐日持有：收盤更新市值 → 執行前一天的待辦（賣出 / 降曝險 / 買回）→ 依收盤判斷出場規則，排到隔天。
     hold、st 原地更新；回傳（現金, 每日資產, 這段的手續費 / 稅 / 出場次數）。"""
-    ex = {"fees": 0.0, "tax": 0.0, "exits": 0}
+    ex = {"fees": 0.0, "tax": 0.0, "exits": 0, "fills": []}
     sell_q, scale_q, reenter = set(), None, False       # 待辦：要全賣的股票、要把部位降到幾成、要不要買回
+    scale_why = ""
     stopped = set()
     navs = []
-    def sell(code, v):
+    def sell(code, v, why):
         nonlocal cash
-        f, t = fee(v), v * c["tax"]
-        cash += v - f - t
+        ex["fills"].append(_fill(t, code, "賣", prices.at[t, code], v, why))
+        f, tx = fee(v), v * c["tax"]
+        cash += v - f - tx
         hold[code] -= v
         ex["fees"] += f
-        ex["tax"] += t
+        ex["tax"] += tx
         if hold[code] < 1e-6:
             del hold[code]
             st["factor"].pop(code, None)
@@ -266,14 +274,14 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
                     if scale_q > 0:
                         v = math.floor(v / prices.at[t, code]) * prices.at[t, code]
                     if v > 0:
-                        sell(code, v)
+                        sell(code, v, scale_why)
                 if scale_q == 0 and not hold or scale_q > 0:
                     scale_q = None
             for code in list(sell_q):
                 if code not in hold:
                     sell_q.discard(code)
                 elif ok(code) and not down(code):
-                    sell(code, hold[code])
+                    sell(code, hold[code], "停損")
                     stopped.add(code)
                     ex["exits"] += 1
                     sell_q.discard(code)
@@ -292,6 +300,7 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
                     f = fee(v)
                     cash -= v + f
                     ex["fees"] += f
+                    ex["fills"].append(_fill(t, code, "買", px, v, "大盤回升買回" if code not in hold else "大盤回升加碼"))
                     if code not in hold:
                         st["factor"][code] = st["peak"][code] = 1.0
                     hold[code] = hold.get(code, 0.0) + v
@@ -307,18 +316,20 @@ def _hold_daily(win, prices, hold, cash, tw_full, st, risk, pos, c, fee, use_reg
         if use_regime and risk["regime_freq"] == "daily":
             on = bool(st["above"].get(t, True))
             if st["regime_on"] and not on:
-                scale_q, reenter = risk["regime_off"], False
+                scale_q, reenter, scale_why = risk["regime_off"], False, "大盤跌破均線降曝險"
             elif not st["regime_on"] and on and not st["dd_out"]:
                 reenter, scale_q = True, None
             st["regime_on"] = on
         if risk["dd_limit"] > 0:
             st["nav_peak"] = max(st["nav_peak"], nav_t)
             if not st["dd_out"] and nav_t / st["nav_peak"] - 1 <= -risk["dd_limit"]:
-                st["dd_out"], scale_q, reenter = True, risk["dd_exposure"], False
+                st["dd_out"], scale_q, reenter, scale_why = True, risk["dd_exposure"], False, "回落控制降曝險"
     return cash, pd.Series(navs, index=win.index, dtype=float), ex
 
 
 # ---------------------------------------------------------------- 模擬
+
+FILL_COLS = ["date", "code", "side", "price", "shares", "amount", "reason"]
 
 def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | None = None) -> dict | None:
     """fixed：{訊號日: {"tw", "tw_full", "rinfo", "pool", "picks"}}，給模擬持股用已記錄的訊號重播（不重新選股）。
@@ -342,7 +353,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
         last_px = pd.to_datetime(prices.apply(pd.Series.last_valid_index), errors="coerce")
         gone = last_px[last_px < days[-1] - pd.Timedelta(days=DELIST_GAP)].to_dict()
     delist_out = []
-    nav, bench, trades, logs = [], [], [], []
+    nav, bench, trades, logs, fills = [], [], [], [], []
     for k, s in enumerate(sigs):
         after = days[days > s]
         if not len(after):
@@ -363,8 +374,10 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             pool_codes, pick_codes = pool["code"].tolist(), pick["code"].tolist()
         # 已下市（成交日之前就沒有行情了）的部位按最後價值轉成現金，否則永遠賣不掉、也不會再投入
         for code in [x for x in hold if x in gone and gone[x] < exe]:
-            cash += hold.pop(code)
+            v = hold.pop(code)
+            cash += v
             delist_out.append(code)
+            fills.append(_fill(exe, code, "賣", np.nan, v, "下市轉現金"))
         total = cash + sum(hold.values())
         if st["dd_out"]:                                 # 回落控制觸發後，換股時恢復並重設高點
             st["dd_out"], st["nav_peak"] = False, total
@@ -389,6 +402,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             v = hold[code] if tgt == 0 else math.floor((hold[code] - tgt) / px) * px
             if v <= 0:
                 continue
+            fills.append(_fill(exe, code, "賣", px, v, "換股出場" if tgt == 0 else "減碼"))
             f, t = fee(v), v * c["tax"]
             cash += v - f - t
             hold[code] -= v
@@ -409,6 +423,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
                 continue
             f = fee(v)
             cash -= v + f
+            fills.append(_fill(exe, code, "買", px, v, "新買進" if code not in hold else "加碼"))
             if code not in hold:
                 st["factor"][code] = st["peak"][code] = 1.0
             hold[code] = hold.get(code, 0.0) + v
@@ -426,6 +441,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             trades[-1]["fees"] += ex["fees"]
             trades[-1]["tax"] += ex["tax"]
             trades[-1]["exits"] = ex["exits"]
+            fills += ex["fills"]
         elif len(hold):
             g = (1 + win.reindex(columns=list(hold)).fillna(0)).cumprod()
             vals = g.mul(pd.Series(hold), axis=1)
@@ -448,7 +464,8 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
     b = b[~b.index.duplicated(keep="first")].reindex(nv.index).fillna(0)
     daily = pd.DataFrame({"strategy": nv.pct_change().fillna(nv.iloc[0] / cfg["capital"] - 1),
                           "pool": b["pool"], "etf": b["etf"]})
-    return {"nav": nv, "daily": daily, "trades": pd.DataFrame(trades), "picks": logs, "hold": hold, "cash": cash}
+    return {"nav": nv, "daily": daily, "trades": pd.DataFrame(trades), "picks": logs,
+            "fills": pd.DataFrame(fills, columns=FILL_COLS).sort_values("date", kind="stable", ignore_index=True), "hold": hold, "cash": cash}
 
 
 # ---------------------------------------------------------------- 成績
@@ -570,9 +587,24 @@ def _clean(x):
     return x
 
 
+def with_names(fills: pd.DataFrame) -> pd.DataFrame:
+    """成交紀錄加上股票名稱（取價格表裡最後一次的名稱）。"""
+    out = fills.copy()
+    if out.empty:
+        out.insert(2, "name", pd.Series(dtype=str))
+        return out
+    px = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date", "code", "name"],
+                         filters=[("code", "in", out["code"].unique().tolist())])
+    names = px.sort_values("date").groupby("code")["name"].last()
+    out.insert(2, "name", out["code"].map(names).fillna(""))
+    return out
+
+
 def save_result(cfg: dict, res: dict, sc: dict) -> Path:
-    """每日報酬（strategy、pool、etf）存 results/<id>.parquet，成績單存 results/<id>.json，給前端讀。"""
+    """每日報酬（strategy、pool、etf）存 results/<id>.parquet，成績單存 results/<id>.json，成交明細存
+    results/<id>_fills.parquet，給前端讀。"""
     RESULTS.mkdir(parents=True, exist_ok=True)
+    with_names(res["fills"]).to_parquet(RESULTS / f"{cfg['id']}_fills.parquet", index=False)
     d = res["daily"][["strategy", "pool", "etf"]].rename_axis("date").reset_index()
     d.to_parquet(RESULTS / f"{cfg['id']}.parquet", index=False)
     out = RESULTS / f"{cfg['id']}.json"
@@ -584,6 +616,21 @@ def save_result(cfg: dict, res: dict, sc: dict) -> Path:
 
 def _p(x, nd=1):
     return "—" if x is None or (isinstance(x, float) and not np.isfinite(x)) else f"{x * 100:+.{nd}f}%"
+
+
+def _fills_html(fills: pd.DataFrame, n_days: int = 3) -> str:
+    """最近 n_days 個有成交的日子，一列一筆。"""
+    if fills.empty:
+        return "<p>（沒有任何成交）</p>"
+    e = html.escape
+    recent = fills[fills["date"].isin(sorted(fills["date"].unique())[-n_days:])].sort_values(
+        ["date", "side", "amount"], ascending=[False, True, False])
+    rows = "".join(
+        f"<tr><td>{r.date:%Y-%m-%d}</td><td>{r.side}</td><td>{e(r.code)} {e(r.name)}</td>"
+        f"<td>{'—' if pd.isna(r.price) else f'{r.price:,.2f}'}</td><td>{r.shares:,}</td><td>{r.amount:,.0f}</td>"
+        f"<td>{e(r.reason)}</td></tr>" for r in recent.itertuples())
+    return ('<div class="wrap"><table><tr><th>成交日</th><th>買賣</th><th>股票</th><th>成交價</th><th>股數</th>'
+            f'<th>金額</th><th>原因</th></tr>{rows}</table></div>')
 
 
 def render(cfg: dict, res: dict, sc: dict) -> str:
@@ -635,6 +682,8 @@ Deflated Sharpe = 扣掉「試了 {sc['n_all']} 個設定挑最好的」運氣�
 累計手續費 {sc['fees_total']:,.0f} 元、證交稅 {sc['tax_total']:,.0f} 元，漲跌停或無行情擋下 {sc['blocked']} 筆。</p>
 <h2>每年</h2><div class="wrap"><table><tr><th>年</th><th>策略</th><th>同池等權</th><th>{ETF}</th><th>對同池超額</th></tr>{yrows}</table></div>
 <h2>最新一期選股（訊號日 {last['signal']}）</h2><p>{"、".join(last['picks']) or "（沒有符合條件的股票）"}</p>
+<h2>最近三個成交日的買賣明細</h2>{_fills_html(with_names(res["fills"]))}
+<p class="muted">完整明細（全期每一筆）在前端「策略」頁，或 data/strategy/results/{cfg['id']}_fills.parquet。</p>
 <h2>設定</h2><pre class="ann">{cfg_txt}</pre>
 <p class="disc">學術研究用。回測假設以收盤價成交、零股可成交，實際成交價與流動性可能更差；歷史結果不代表未來。</p>
 </main></body></html>"""

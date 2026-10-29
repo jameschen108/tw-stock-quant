@@ -411,6 +411,39 @@ def _trial_form(sig: str, paths: list[Path]) -> None:
     _charts([(cfg["name"], res["daily"])])
 
 
+def _fills(sig: str, cfg: dict, how: str) -> None:
+    """買賣明細：優先讀存檔（成績單也是存檔時），沒有就用快取的回測現場補。"""
+    f = None
+    path = RESULTS / f"{cfg['id']}_fills.parquet"
+    if how.startswith("已存結果") and path.exists():
+        f = pd.read_parquet(path)
+    if f is None:
+        res = common.cached_simulate(sig, cfg)
+        f = strategy.with_names(res["fills"]) if res is not None else pd.DataFrame()
+    if f.empty:
+        st.caption("沒有任何成交。")
+        return
+    f["date"] = pd.to_datetime(f["date"])
+    days = sorted(f["date"].dt.date.unique(), reverse=True)
+    c1, c2 = st.columns([2, 1])
+    day = c1.selectbox("成交日（有買賣的日子）", ["全部"] + days, key=f"fills_day_{cfg['id']}",
+                       format_func=lambda d: d if d == "全部" else f"{d:%Y-%m-%d}")
+    side = c2.selectbox("買賣", ["全部", "買", "賣"], key=f"fills_side_{cfg['id']}")
+    show = f if day == "全部" else f[f["date"].dt.date == day]
+    if side != "全部":
+        show = show[show["side"] == side]
+    show = show.sort_values(["date", "side", "amount"], ascending=[False, True, False])
+    out = show.rename(columns={"date": "成交日", "code": "代號", "name": "名稱", "side": "買賣", "price": "成交價",
+                               "shares": "股數", "amount": "金額", "reason": "原因"})
+    out["成交日"] = out["成交日"].dt.strftime("%Y-%m-%d")
+    common.table(common.styled(out, fmt={"成交價": "{:,.2f}", "股數": "{:,.0f}", "金額": "{:,.0f}"}), hide_index=True)
+    buy, sell = show.loc[show["side"] == "買", "amount"].sum(), show.loc[show["side"] == "賣", "amount"].sum()
+    st.caption(f"共 {len(show)} 筆，買進 {buy:,.0f} 元、賣出 {sell:,.0f} 元。成交價是當天收盤價；全部賣出的股數是當天市值換算，"
+               "可能和實際整股數差一點。")
+    st.download_button("下載全部明細 CSV", f.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"{cfg['id']}_fills.csv", mime="text/csv", key=f"fills_dl_{cfg['id']}")
+
+
 def _compare(sig: str, paths: list[Path], labels: dict) -> None:
     st.caption("用上次「重算回測快取」存下的結果，看的時候不寫入嘗試紀錄；策略檔改過的會現場重算。"
                "資料更新後，按右上「更新 / 重算」→「重算回測快取」。")
@@ -462,6 +495,8 @@ def _compare(sig: str, paths: list[Path], labels: dict) -> None:
             with c2:
                 st.markdown("**分段，相對 0050**")
                 _segments(daily)
+            st.markdown("**買賣明細**")
+            _fills(sig, cfg, how)
 
 
 def _variants(sig: str, paths: list[Path], labels: dict) -> None:

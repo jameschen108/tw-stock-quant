@@ -20,6 +20,7 @@
   price_performance     區間含息報酬、最大回撤，與同期全市場等權比較
   factor_backtest       因子回測摘要（rank IC）
   outlook_picks         模型選股清單（短 / 中 / 長期都看漲）與歷史校準
+  theme_summary         主題（themes.toml 手動分類）的強弱排行、成分股報酬、個股所屬主題
 
 需要 Anthropic 憑證（ANTHROPIC_API_KEY，可放專案 .env）。對話紀錄存 logs/analyst/。
 引用 outlook.py 的模型看漲 / 看跌標籤（附歷史校準），不給目標價。學術研究用。
@@ -38,6 +39,7 @@ from anthropic import beta_tool
 
 from build_panel import OUT
 import outlook as OL
+import themes as TH
 from report import build_facts, freshness_warning, industry_info, load_dotenv
 
 MODELS = {"haiku": "claude-haiku-5-5", "sonnet": "claude-sonnet-5-5", "opus": "claude-opus-5-5"}
@@ -59,6 +61,8 @@ SYSTEM = """你是台股研究助理，替一位個人投資者回答關於台�
   寫法固定為「一般而言，X 會 Y；資料無法確認這家公司是否屬於這種情況」，後面不要接「所以」「因此」「有一部分反映」把機制套回這家公司。
 - 不要把獲利、虧損歸到特定子公司或轉投資（例如「虧損主要來自某子公司」），除非公告或財報資料明寫。
 - 產業分類只用工具給的產業名稱（例如「半導體業」）；不要用自己的知識把公司歸成記憶體、IC 設計、AI 伺服器等次產業。
+  次產業或主題（記憶體、AI 伺服器、散熱等）只能用 theme_summary 回傳的主題與成分股；不在清單裡的公司，說「主題清單沒有收錄」，不要自己判斷。
+  主題是手動挑的成分股，有事後偏差；主題報酬是等權平均，只能說當下的相對強弱，不要推論原因或預測。
 - 公司公告的財測可以引用（註明來源與期間），但不要把財測和已公布數字相加推算全年或其他期間，也不要算任何未來期間的數字。
 - 資料時點是 {asof}；營收、財報只用當時已公布的資料。季財報最新可能落後一季，必要時用重大訊息補充並註明來源。
 - 2026Q3 起由公開資料補上的季度沒有現金流量表，現金流相關因子會缺值。
@@ -417,8 +421,49 @@ def outlook_picks() -> str:
         "note": "超額 = 之後 N 個交易日相對同產業等權的報酬；歷史統計，不保證未來。勝率因報酬右偏普遍低於 50%，要互相比較"})
 
 
+@lru_cache(maxsize=2)
+def _theme_data(asof: pd.Timestamp):
+    rets, val = TH.load_prices(asof, since=asof - pd.Timedelta(days=200))
+    return TH.load_themes(), rets, val
+
+
+@beta_tool(eager_input_streaming=True)
+def theme_summary(theme: str | None = None, code: str | None = None) -> str:
+    """主題（themes.toml 手動分類，例如記憶體 IC、AI 伺服器、散熱與電源）的強弱。三種用法：
+    不填參數 = 全部主題排行（1/5/20/60 日報酬、相對 0050 超額、20 日上漲比例、成交值倍數）；
+    填 theme = 該主題各成分股的 1/5/20/60 日報酬；填 code = 這檔股票屬於哪些主題。
+    成分股是手動挑的，有事後偏差；報酬是成分股等權平均，歷史統計不保證未來。
+
+    Args:
+        theme: 主題 key（例如 memory_ic）或中文名稱（部分字串即可）。
+        code: 股票代號，查它屬於哪些主題。
+    """
+    themes, rets, val = _theme_data(ASOF)
+    listing = {k: t["name"] for k, t in themes.items()}
+    if code:
+        return _j({"code": code, "themes": [{"key": k, "name": t["name"]} for k, t in themes.items() if code in t["codes"]],
+                   "note": "空清單代表主題清單沒有收錄這檔，不要自己判斷它屬於哪個主題"})
+    if theme:
+        hit = [k for k, t in themes.items() if theme == k or theme in t["name"]]
+        if len(hit) != 1:
+            return _j({"error": "找不到唯一符合的主題" if not hit else f"符合多個主題：{hit}", "available": listing})
+        t = themes[hit[0]]
+        m = TH.members(t, rets, names()["name"])
+        return _j({"theme": hit[0], "name": t["name"], "desc": t.get("desc"), "as_of": str(rets.index.max().date()),
+                   "members": [{"code": r.code, "name": r.name, **{f"r{h}": _f(getattr(r, f"r{h}"), 4) for h in TH.HORIZONS}}
+                               for r in m.itertuples()],
+                   "note": "r{N} = 最近 N 個交易日含息報酬（小數）；成分股手動挑選，有事後偏差"})
+    s = TH.summarize(themes, rets, val)
+    rows = [{"theme": r["theme"], "name": r["name"], "n_members": int(r["n"]),
+             **{k: _f(r[k], 4) for k in ("r1", "r5", "r20", "r60", "ex5", "ex20", "ex60", "up_ratio", "value_share_5d", "value_mult")}}
+            for _, r in s.iterrows()]
+    return _j({"as_of": str(rets.index.max().date()), "sorted_by": "r20 由高到低", "themes": rows,
+               "note": "ex = 主題報酬減 0050；up_ratio = 近 20 日報酬為正的成分股占比；value_mult = 近 5 日相對近 60 日平均的成交值占比倍數，"
+                       ">1 代表資金流入。成分股手動挑選，有事後偏差，只看當下相對強弱"})
+
+
 TOOLS = [find_stock, stock_facts, screen_stocks, compare_peers, search_announcements, get_announcement,
-         price_performance, factor_backtest, outlook_picks]
+         price_performance, factor_backtest, outlook_picks, theme_summary]
 
 
 # ---------------------------------------------------------------- 對話

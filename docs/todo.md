@@ -20,7 +20,7 @@
 - [ ] 3 題新籌碼題：credit_gw_margin、credit_tsmc_foreign_low、credit_0050_margin_drop（約 $0.25–0.4）
 - [ ] 重評 edge_buy_advice（judge 改成可引用模型標籤）
 - [ ] 重跑 lookup_tsmc_ytd（股票池排除 ETF 後答案改為 17.2）
-- [ ] 跑完整開發集，確認 `outlook_picks` 工具與 outlook 章節沒有影響舊題
+- [ ] 跑完整開發集，確認 `outlook_picks`、`theme_summary` 工具與 prompt 的主題規則沒有影響舊題；另加 1–2 題主題題（例如「記憶體 IC 近 20 日表現」「南亞科屬於哪個主題」）
 - [ ] 保留集 `evals/analyst/holdout.jsonl`（18 題）：同 prompt + 模型只能跑一次，等 prompt 和工具穩定再跑
 
 ## LLM 決策實驗

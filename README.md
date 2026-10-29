@@ -50,7 +50,7 @@
 
 **前端與分析師問答**
 - 本機 Streamlit 前端：總覽、個股、策略、模擬持股、主題、分析師問答六頁，頁首固定顯示資料日期與新鮮度。
-- 分析師問答讓 Claude 呼叫工具查專案資料回答問題，例如「台積電最近一季毛利率和去年同季比如何？」。可選 Sonnet 或 Haiku，每則先估花費、回答後顯示實際花費，對話寫進 `logs/analyst/`。`evals/analyst/` 有評測題，分成開發集（`cases.jsonl`，27 題，改 prompt 時都看過）和保留集（`holdout.jsonl`，18 題，同類別不同股票，沒拿來調 prompt）。平常只跑開發集；保留集要加 `--split holdout`，每個 prompt 加模型只能跑一次，每次執行記在 `evals/analyst/holdout_runs.jsonl`。
+- 分析師問答讓 Claude 呼叫工具查專案資料回答問題（含 `theme_summary`：主題強弱、成分股、個股所屬主題，次產業只能引用 `themes.toml`），例如「台積電最近一季毛利率和去年同季比如何？」。可選 Sonnet 或 Haiku，每則先估花費、回答後顯示實際花費，對話寫進 `logs/analyst/`。`evals/analyst/` 有評測題，分成開發集（`cases.jsonl`，27 題，改 prompt 時都看過）和保留集（`holdout.jsonl`，18 題，同類別不同股票，沒拿來調 prompt）。平常只跑開發集；保留集要加 `--split holdout`，每個 prompt 加模型只能跑一次，每次執行記在 `evals/analyst/holdout_runs.jsonl`。
 
 > 輸出的選股清單、星等與看漲看跌標籤是依歷史統計的分組，不保證未來報酬，不構成投資建議。
 

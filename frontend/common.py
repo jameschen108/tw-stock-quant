@@ -497,7 +497,8 @@ def preview_html(path: Path) -> None:
 # ---------------------------------------------------------------- 回測結果
 
 NAV_COLOR = {"自選（扣成本）": C_STRAT, "自選（不扣成本）": C_POOL,
-             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF}
+             "我的組合": C_STRAT, "同組等權": C_POOL, paper.ETF: C_ETF,
+             "這套規則": C_STRAT, "不加風險規則": "#14b8a6"}
 
 
 def weight_table(weights: pd.Series) -> None:

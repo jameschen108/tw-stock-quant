@@ -523,24 +523,65 @@ def _mine_create() -> None:
                                              help="持股過去 60 日波動太大就降部位；" + frac)
         st.caption("每天收盤判斷，隔一個交易日收盤成交（跌停賣不掉就再等一天）；規則建立後不能改，要換就建新組合。")
 
-    if st.button("建立", icon=":material/add:", key="mn_create"):
+    settings = dict(monthly=monthly, capital=float(cap), weighting=weighting, max_weight=float(max_weight),
+                    risk=risk, source=source)
+    c1, c2, c3, _ = st.columns([1.2, 1.2, 1.2, 2], vertical_alignment="bottom")
+    start = c1.date_input("回測起日", pd.Timestamp.today() - pd.DateOffset(years=3), key="mn_bt_start",
+                          min_value=pd.Timestamp("2012-01-01"), max_value=pd.Timestamp.today())
+    if c2.button("先回測過去", icon=":material/history:", key="mn_bt"):
+        try:
+            w = custom.parse_codes(spec) if source is None else None
+            with st.spinner("用同一套規則回頭重播…"):
+                st.session_state["mn_bt_res"] = (repr((spec if source is None else None, start, settings)),
+                                                 mine.backtest(w, start, **settings))
+        except ValueError as e:
+            st.warning(str(e))
+        except Exception as e:
+            st.error("回測失敗：" + common.scrub(e))
+    if c3.button("建立", icon=":material/add:", key="mn_create"):
         if _is_llm_book(name.strip()):
             st.warning("這個名稱是 LLM 實驗用的，請換一個。")
             return
         try:
             w = custom.parse_codes(spec) if source is None else None
-            sig = mine.create(name.strip(), w, monthly, float(cap), weighting=weighting, max_weight=float(max_weight),
-                              risk=risk, source=source)
+            sig = mine.create(name.strip(), w, **settings)
             st.success(f"已建立，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。")
+            st.session_state.pop("mn_bt_res", None)
             st.rerun()
         except ValueError as e:
             st.warning(str(e))
         except Exception as e:
             st.error("建立失敗：" + common.scrub(e))
+    if "mn_bt_res" in st.session_state:
+        key, res = st.session_state["mn_bt_res"]
+        if key != repr((spec if source is None else None, start, settings)):
+            st.caption("設定改過了，下面是上一次設定的回測；按「先回測過去」重算。")
+        _mine_backtest(res, source)
+
+
+def _mine_backtest(res: dict, source: str | None) -> None:
+    """建立前回測的結果：同一套規則、不加風險規則、同組等權、0050。"""
+    d, perf = res["daily"].copy(), dict(res["perf"])
+    labels = [("strategy", "這套規則")]
+    if res.get("base"):
+        d["base"], perf["base"] = res["base"]["daily"]["strategy"].reindex(d.index).fillna(0), res["base"]["perf"]["strategy"]
+        labels.append(("base", "不加風險規則"))
+    labels += [("pool", "同組等權"), ("etf", paper.ETF)]
+    nv = res["nav"]
+    st.markdown(f"**回測 {nv.index[0]:%Y-%m-%d} → {nv.index[-1]:%Y-%m-%d}**（{len(res['signals'])} 次訊號・"
+                f"{mine.REBALANCE[res['rebalance']]}）")
+    common.nav_chart(d, labels, "累積淨值（起點 = 1）", 320)
+    common.cmp_table(d, perf, labels)
+    t = res["trades"]
+    note = (f"這套規則與不加風險規則都扣成本（手續費 {t['fees'].sum():,.0f}、證交稅 {t['tax'].sum():,.0f} 元）；"
+            "同組等權是每個訊號日的名單等權、不扣成本、漲停也買得到。每個訊號日只用當時的資料選股和算權重。")
+    if not source or source == "watchlist":
+        note += "注意：名單是現在挑的，回測過去有後見之明，只能參考。"
+    st.caption(note)
 
 
 def _mine() -> None:
-    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；要看過去用策略頁的「自選股回測」）。"
+    st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；建立前可按「先回測過去」看同一套規則以前的表現）。"
                "隔一個交易日收盤進場。月調組合在新月份、財報驚喜組合在名單有變時由 update.py 記新一期，其餘只在你改持股時調整。"
                "紀錄只追加，不改寫。")
     meta = {k: v for k, v in mine.load_meta().items() if not v["archived"]}

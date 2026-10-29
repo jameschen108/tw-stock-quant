@@ -9,6 +9,7 @@
   uv run mine.py new 低波 2330,2317,2454 --weighting inv_vol --max-weight 0.4 --rule stop_loss=0.1 --rule regime=ma
   uv run mine.py new 前30 - --source strategies/top30.toml --monthly                # 名單從策略帶入，每月照規則重選
   uv run mine.py new 營收驚喜 - --source rev_surprise --weighting equal               # 財報驚喜事件：新公布的買、持有期滿賣
+  uv run mine.py bt - --source rev_surprise --weighting equal --start 2023-01-01     # 建立前先用同一套規則回測過去
   uv run mine.py edit 科技 2330:40,2317:30,3711:30                                 # 改持股 / 權重，從最新資料日起生效
   uv run mine.py archive 科技                                                      # 封存（紀錄保留，不再更新）
   uv run mine.py                                                                   # 月調組合記新月份，重算並印出各組合摘要（update.py 會跑）
@@ -29,6 +30,8 @@
         max_weight 單檔上限，分不完的留現金。manual 以外在每次訊號日用當時的資料重算
       風險規則 risk：strategy.DEFAULTS["risk"] 的欄位（停損、停利、持有天數、大盤濾網、資產回落、目標波動），
         重播時帶進 strategy.simulate；大盤濾網（每月判斷）與目標波動在每個訊號日用當時以前的資料決定曝險
+  - 回測（bt）：同一套規則從 --start 起回頭重播，每個訊號日用當時的資料重選、重算權重；月調的訊號日是每月最後一個交易日。
+    另跑一次不加風險規則的版本對照。觀察名單和自己輸入的代號是「現在」挑的，回測過去有後見之明，只能參考
 """
 import argparse
 import json
@@ -152,9 +155,9 @@ def source_codes(source: str, sig: pd.Timestamp | None = None) -> list[str]:
 
 
 def make_weights(w: pd.Series, weighting: str = "manual", max_weight: float = 1.0,
-                 sig: pd.Timestamp | None = None) -> pd.Series:
+                 sig: pd.Timestamp | None = None, rets: pd.DataFrame | None = None) -> pd.Series:
     """目標權重。manual 照輸入的權重；其他只看代號，用訊號日 sig 當時的資料算（同 strategy.target_weights）。
-    超過單檔上限的部分分給其他股票，都到上限就留現金。"""
+    超過單檔上限的部分分給其他股票，都到上限就留現金。rets：已載入的報酬（回測時重複用，省得每期重讀）。"""
     if weighting not in WEIGHTINGS:
         raise ValueError(f"加權方式要是 {'、'.join(WEIGHTINGS)} 其中之一")
     if not 0 < max_weight <= 1:
@@ -167,7 +170,7 @@ def make_weights(w: pd.Series, weighting: str = "manual", max_weight: float = 1.
     sig = sig if sig is not None else data_date()
     pick = pd.DataFrame({"code": list(w.index)})
     if weighting == "inv_vol":
-        r = load_rets(sig - pd.Timedelta(days=120)).loc[:sig]
+        r = (rets if rets is not None else load_rets(sig - pd.Timedelta(days=120))).loc[:sig].iloc[-60:]
         pick["vol_60d"] = pick["code"].map(r.reindex(columns=pick["code"]).rolling(60, min_periods=40).std().iloc[-1])
     elif weighting == "score":
         sc = _latest_on_or_before(OUT / "bt" / "composite_scores.parquet", ["date", "code", "comp_equal"], sig)
@@ -315,7 +318,7 @@ def replay(name: str, rets: pd.DataFrame | None = None) -> dict | None:
 
 def _run(name: str, sigs: dict[pd.Timestamp, pd.Series], capital: float, risk: dict, rebalance: str,
          rets: pd.DataFrame) -> dict | None:
-    """照訊號日的目標權重重播。"""
+    """照訊號日的目標權重重播（replay 與 backtest 共用）。"""
     risk = {**S.DEFAULTS["risk"], **risk}
     idx = S.regime_index(rets, risk) if risk["regime"] == "ma" else None
     fixed = {}
@@ -336,34 +339,95 @@ def _run(name: str, sigs: dict[pd.Timestamp, pd.Series], capital: float, risk: d
     return res
 
 
+def backtest(w: pd.Series | None, start, end=None, monthly: bool = False, capital: float = 1_000_000,
+             weighting: str = "manual", max_weight: float = 1.0, risk: dict | None = None,
+             source: str | None = None) -> dict:
+    """建立前先看：同一套規則從 start 起回頭重播，每個訊號日用當時的資料重選、重算權重。
+    回傳 _run 的結果，另加 base（不加風險規則的同一組訊號，有風險規則時才有）。無法回測時 raise ValueError。"""
+    risk = _check_rules(weighting, max_weight, risk, source)
+    if w is None and not source:
+        raise ValueError("沒有股票：輸入代號，或選一個名單來源")
+    start = pd.Timestamp(start)
+    rets = load_rets(start - pd.Timedelta(days=HIST_DAYS))
+    if end is not None:
+        rets = rets[rets.index <= pd.Timestamp(end)]
+    days = rets.index[rets.index >= start]
+    if len(days) < 3:
+        raise ValueError("起訖日之間的交易日太少")
+    rebalance = "events" if source in EVENT_SOURCES else "monthly" if monthly else "none"
+    if rebalance == "events":
+        picks = SU.schedule(EVENT_SOURCES[source], days[0], days[-1])
+    else:
+        dates = [days[0]]
+        if monthly:
+            me = pd.Series(days, index=days).groupby(days.to_period("M")).max()
+            dates += [d for d in me if d > days[0]]
+        picks = {d: source_codes(source, d) if source else list(w.index) for d in dates}
+    traded = rets.notna().rolling(5, min_periods=1).max().astype(bool)       # 近 5 個交易日有行情的才算當時買得到
+    sigs = {}
+    for d, codes in picks.items():
+        x = w.reindex(codes) if w is not None else pd.Series(1.0, index=codes)
+        x = x[x.index.isin(traded.columns[traded.loc[d].values])]
+        sigs[d] = make_weights(x, weighting, max_weight, d, rets)
+    if not any(len(x) for x in sigs.values()):
+        raise ValueError("期間內沒有任何股票可以買")
+    res = _run("回測", sigs, capital, risk, rebalance, rets)
+    if res is None:
+        raise ValueError("期間內沒有成交日")
+    if risk:
+        res["base"] = _run("回測", sigs, capital, {}, rebalance, rets)
+    res["rebalance"] = rebalance
+    return res
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd")
     n = sub.add_parser("new")
     n.add_argument("name")
-    n.add_argument("codes")
-    n.add_argument("--monthly", action="store_true")
-    n.add_argument("--capital", type=float, default=1_000_000)
-    n.add_argument("--weighting", default="manual", choices=list(WEIGHTINGS))
-    n.add_argument("--max-weight", type=float, default=1.0)
-    n.add_argument("--source", help=f"{'、'.join(SOURCES)} 或 strategies/xxx.toml；codes 填 - 表示名單全部從來源帶入")
-    n.add_argument("--rule", action="append", default=[], help="風險規則，例 stop_loss=0.1、regime=ma，可重複")
+    b = sub.add_parser("bt", help="建立前先回測：同一套規則從 --start 起回頭重播")
+    b.add_argument("--start", required=True)
+    b.add_argument("--end")
+    for p in (n, b):
+        p.add_argument("codes")
+        p.add_argument("--monthly", action="store_true")
+        p.add_argument("--capital", type=float, default=1_000_000)
+        p.add_argument("--weighting", default="manual", choices=list(WEIGHTINGS))
+        p.add_argument("--max-weight", type=float, default=1.0)
+        p.add_argument("--source", help=f"{'、'.join(SOURCES)} 或 strategies/xxx.toml；codes 填 - 表示名單全部從來源帶入")
+        p.add_argument("--rule", action="append", default=[], help="風險規則，例 stop_loss=0.1、regime=ma，可重複")
     e = sub.add_parser("edit")
     e.add_argument("name")
     e.add_argument("codes")
     sub.add_parser("archive").add_argument("name")
     a = ap.parse_args()
     try:
-        if a.cmd == "new":
+        if a.cmd in ("new", "bt"):
             risk = {}
             for kv in a.rule:
                 k, _, v = kv.partition("=")
                 d = S.DEFAULTS["risk"].get(k)
                 risk[k] = type(d)(float(v)) if isinstance(d, (int, float)) else v
             w = None if a.codes == "-" else parse_codes(a.codes)
+        if a.cmd == "new":
             sig = create(a.name, w, a.monthly, a.capital, weighting=a.weighting, max_weight=a.max_weight,
                          risk=risk, source=a.source)
             print(f"已建立「{a.name}」，訊號日 {sig:%Y-%m-%d}，隔一個交易日收盤進場。" + "；".join(describe(load_meta()[a.name])))
+        elif a.cmd == "bt":
+            res = backtest(w, a.start, a.end, a.monthly, a.capital, a.weighting, a.max_weight, risk, a.source)
+            nv = res["nav"]
+            print(f"回測 {nv.index[0]:%Y-%m-%d} → {nv.index[-1]:%Y-%m-%d}，{len(res['signals'])} 次訊號・{REBALANCE[res['rebalance']]}")
+            rows = [("這套規則（扣成本）", res["perf"]["strategy"])]
+            if res.get("base"):
+                rows.append(("不加風險規則（扣成本）", res["base"]["perf"]["strategy"]))
+            rows += [("同組等權（不扣成本）", res["perf"]["pool"]), (S.ETF, res["perf"]["etf"])]
+            for label, p in rows:
+                print(f"  {label:<14}" + (f"總報酬 {p['total']:+.1%}  年化 {p['cagr']:+.1%}  波動 {p['vol']:.1%}  "
+                                          f"Sharpe {p['sharpe']:.2f}  最大回落 {p['mdd']:.1%}" if p else "期間太短"))
+            t = res["trades"]
+            print(f"  手續費 {t['fees'].sum():,.0f}、證交稅 {t['tax'].sum():,.0f}，平均每次換手 {t['turnover'].mean():.1%}")
+            if not a.source or a.source == "watchlist":
+                print("  注意：名單是現在挑的，回測過去有後見之明，只能參考")
         elif a.cmd == "edit":
             print(f"已記錄「{a.name}」的新持股，訊號日 {edit(a.name, parse_codes(a.codes)):%Y-%m-%d}")
         elif a.cmd == "archive":

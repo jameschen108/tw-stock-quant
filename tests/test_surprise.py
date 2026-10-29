@@ -1,4 +1,4 @@
-"""surprise.py 的驚喜分數、分組、持有期，以及 mine.py 的事件組合（合成資料）。"""
+"""surprise.py 的驚喜分數、分組、持有期，以及 mine.py 的事件組合與建立前回測（合成資料）。"""
 import numpy as np
 import pandas as pd
 import pytest
@@ -120,3 +120,17 @@ def test_events_band_skips_small_rebalances(mine_market):
     assert t["tax"].iloc[1] == 0                                         # 事件組合：只差一點的不賣
     assert tn["tax"].iloc[1] > 0                                         # 一般組合照目標權重賣
 
+
+def test_backtest_monthly_and_base(mine_market):
+    days = pd.bdate_range("2024-11-01", periods=len(DAYS))              # 跨三個月底
+    px = pd.concat([g.assign(date=days) for _, g in make_prices().groupby("code")])
+    mine_market(px)
+    w = pd.Series({"1101": 1.0, "1102": 1.0})
+    res = mine.backtest(w, days[0], monthly=True, weighting="equal")
+    assert res["rebalance"] == "monthly" and "base" not in res
+    assert list(res["signals"])[1:] == [d for d in pd.Series(days, index=days).groupby(days.to_period("M")).max()
+                                        if d > days[0]]
+    res = mine.backtest(w, days[1], risk={"stop_loss": 0.1})            # 第一天還沒有報酬，算買不到
+    assert res["base"]["perf"]["strategy"]["total"] == pytest.approx(res["perf"]["strategy"]["total"])   # 沒觸發停損就一樣
+    with pytest.raises(ValueError):
+        mine.backtest(None, days[0])

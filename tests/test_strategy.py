@@ -171,3 +171,13 @@ def test_stop_loss_exit_is_recorded_as_fill(market):
     f = res["fills"]
     stop = f[f["reason"] == "停損"]
     assert len(stop) == 1 and stop["code"].iloc[0] == "1101" and stop["side"].iloc[0] == "賣"
+
+
+def test_score_weighting_favors_top_ranked():
+    pick = pd.DataFrame({"code": ["hi", "mid", "lo"], "comp_equal": [90.0, 50.0, 10.0]})
+    pos = {**S.DEFAULTS["position"], "weighting": "score"}
+    w = S.target_weights(pick, pos, "comp_equal", False)   # 由大到小選：分數高的先選、權重大
+    assert w["hi"] > w["mid"] > w["lo"]
+    w = S.target_weights(pick, pos, "comp_equal", True)    # 由小到大選：分數低的先選、權重大
+    assert w["lo"] > w["mid"] > w["hi"]
+

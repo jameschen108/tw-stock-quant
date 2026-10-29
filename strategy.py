@@ -165,7 +165,7 @@ def target_weights(pick: pd.DataFrame, pos: dict, sort: str, asc: bool) -> pd.Se
         raw = 1 / pick["vol_60d"].where(pick["vol_60d"] > 0)
         raw = raw.fillna(raw.median() if raw.notna().any() else 1.0)
     elif pos["weighting"] == "score":
-        raw = pick[sort].rank(ascending=asc)
+        raw = pick[sort].rank(ascending=not asc)          # 排在前面（選股時先取）的名次數字大、權重大
     else:
         raw = pd.Series(1.0, index=pick.index)
     w = raw / raw.sum()

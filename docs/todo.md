@@ -40,16 +40,16 @@
 
 ## 期刊方法（回應「直接用 AI 生就好」的質疑）
 
-2026-10-29 與教授討論後加入。出處憑記憶列出，卷期年份先上 Google Scholar 核對再寫進報告。優先做前兩項。
+2026-10-29 與教授討論後加入。原候選出處需逐項核對。另見已查核的 [文獻與功能擴充路線圖](literature_roadmap.md)：新增 19 篇文獻、資料缺口、實作入口與驗收方式；屬候選規劃，尚未實作，建議優先順序見路線圖（不需全做）。
 
 - [ ] 標明已用方法的出處：README 與報告寫明 Deflated Sharpe（Bailey & López de Prado 2014, JPM；`robust.py` 等）與 Newey-West 標準誤（Newey & West 1987, Econometrica；`patterns.py` 等）
 - [ ] 形態辨識改用 Lo, Mamaysky & Wang (2000, JF)：核迴歸平滑後依論文定義辨識頭肩、雙重頂底等，檢定形態後報酬分布；取代 `patterns.py` 自訂規則，K 線買賣點圖沿用
-- [ ] 多重檢定：照 Sullivan, Timmermann & White (1999, JF) 用 White (2000, Econometrica) Reality Check bootstrap 檢定最佳技術規則是否靠運氣，另算 Bailey et al. (2017, J. Computational Finance) 的 PBO；輸入用 `trials.jsonl`
-- [ ] 事件研究照 MacKinlay (1997, JEL)：先確認 `event_study.py` 是否已用市場模型異常報酬與 CAR 檢定；財報事件研究加 Bernard & Thomas (1989) 的 PEAD 與 SUE
+- [ ] 多重檢定：照 Sullivan, Timmermann & White (1999, JF) 用 White (2000, Econometrica) Reality Check bootstrap 檢定最佳技術規則是否靠運氣，另評估 Bailey et al. (2017, J. Computational Finance) 的 PBO；先依設定 hash 保存各候選共同期間的逐期報酬，`trials.jsonl` 摘要不能直接當輸入；另見路線圖的 SPA 與 Romano–Wolf 候選
+- [ ] 事件研究照 MacKinlay (1997, JEL)：已確認 `event_study.py` 有多種基準的持有期超額報酬，後續補市場模型 AR／CAR 與適當的相依性處理；財報事件研究加 Bernard & Thomas (1989) 的 PEAD 與 SUE
 - [ ] 因子模型拆解：策略與 LLM 組報酬對 Fama-French (1993, 2015) 與 Carhart (1997) 因子迴歸，看扣掉曝險後的 alpha；和「因子曝險」項目合併做
 - [ ] 趨勢區間用 GARCH (Bollerslev 1986, J. Econometrics)：和 `refprice.py` 現有統計波動區間比 68% 覆蓋率
 - [ ] 籌碼因子的理論依據：引用 Richards (2005, JFQA) 外資行為、Barber, Lee, Liu & Odean (2009, RFS) 台灣散戶交易損失
-- [ ] LLM 實驗定位成研究對象：引用 Lopez-Lira & Tang (2023) 與 Glasserman & Lin (2023) 的前視偏差，說明前向模擬的必要；兩篇確認是否已正式刊登
+- [ ] LLM 實驗定位成研究對象：引用 Lopez-Lira & Tang（已正式刊於 JFE 2026, 184, 104335）與 Glasserman & Lin（已正式刊於 JFDS 2024, 6(1), 25–42），說明前向模擬的必要；出版來源見文獻路線圖
 
 ## 新功能（候選）
 

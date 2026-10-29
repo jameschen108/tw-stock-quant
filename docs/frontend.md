@@ -52,6 +52,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 |---|---|
 | 全部事實（一次取得） | `report.build_facts(code, asof)` → `(facts, series)`；`asof` 預設最新價格日，可以選過去日期做時點回溯 |
 | 價格走勢、52 週高低、均線差距 | `series["px"]`、`facts["price"]` |
+| 即時報價（成交價、漲跌、高低、成交量、漲跌停；盤中每 15 秒更新，時點回溯時不顯示） | `realtime.quotes([code])`（`common.live_quotes` 快取 10 秒）；只顯示，不進事實表 |
 | 短中長期看法：標籤、百分位、樣本外歷史校準、可靠度 | `facts["outlook"]`（來自 `outlook.stock_outlook`）；歷史走勢用 `outlook.load_outlook(code)` |
 | 綜合分數與四組百分位（營收動能、品質、價值、趨勢） | `facts["scores"]`、`series["trend"]` |
 | 月營收 | `facts["revenue"]`、`series["rv"]` |
@@ -99,7 +100,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 多策略：起點、期數、目標曝險、大盤濾網狀態（距均線多少 %）、累積報酬、0050、同池、最大回落、現金、出場次數 | `paper.load_strategy_summaries()`（讀 `data/paper/strat_summary.json`） |
 | 各策略目前持股（市值、權重）或本期目標權重 | 同上，`holdings` / `targets` |
 | 每期紀錄（訊號日、選了哪些、權重） | `data/paper/strat_ledger.parquet`：signal_date、strategy、hash、code、weight、in_pick、pick_order、regime_on |
-| 自選組合（建立、改持股、封存；淨值對同組等權與 0050） | `mine.py`：紀錄 `data/paper/mine_ledger.parquet`（只追加）、設定 `mine_meta.json`；`mine.replay(name)` 每次現算淨值，還沒進場回傳 None。`LLM篩選-<model>`、`量化全買`、`隨機對照-<model>` 是實驗帳本，只能看，不能改、不能封存 |
+| 自選組合（建立、改持股、封存；淨值對同組等權與 0050；持股即時估值） | `mine.py`：紀錄 `data/paper/mine_ledger.parquet`（只追加）、設定 `mine_meta.json`；`mine.replay(name)` 每次現算淨值，還沒進場回傳 None。`LLM篩選-<model>`、`量化全買`、`隨機對照-<model>` 是實驗帳本，只能看，不能改、不能封存 |
 | LLM 決策（三組淨值加 0050、比較表、選股檢定、準前瞻回放、決策紀錄） | 只讀 `data/paper/llm_decisions.jsonl` 與 `llm_replay.jsonl`。選股檢定用 `llm_trader.selection_test`，回放結果用 `llm_replay.evaluate`（各自快取）。三組淨值用 `mine.replay`。點決策列看理由與風險，再打開個股頁。不從前端呼叫 API |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |

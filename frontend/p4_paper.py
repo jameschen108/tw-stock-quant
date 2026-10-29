@@ -516,6 +516,7 @@ def _mine() -> None:
         common.nav_chart(res["daily"], labels, "累積淨值（起點 = 1）", 340)
         common.cmp_table(res["daily"], res["perf"], labels)
         st.caption(common.cost_line(res) + "。同組等權不扣成本。")
+        st.fragment(run_every=common.live_every())(_mine_live)(res)
     if len(sigs) > 1:
         with st.expander(f"歷次訊號（{len(sigs)}）"):
             rows = [{"訊號日": f"{s:%Y-%m-%d}", "代號": c, "目標權重": float(w)}
@@ -525,6 +526,41 @@ def _mine() -> None:
         st.caption("這組由 llm_trader.py 管理，不能改持股，也不能封存。三組比較和每檔理由在「LLM 決策」。")
     else:
         _mine_edit(name, cur)
+
+
+def _mine_live(res: dict) -> None:
+    """持股的即時估值：資料日的部位市值 × 即時價 ÷ 資料日收盤。只顯示，不寫進紀錄；盤中由 fragment 每 15 秒重跑。"""
+    hold = {c: v for c, v in res["hold"].items() if v > 0}
+    if not hold:
+        return
+    last = res["nav"].index[-1]
+    px = pd.read_parquet(mine.OUT / "prices_daily.parquet", columns=["date", "code", "close"],
+                         filters=[("date", "==", last), ("code", "in", list(hold))]).set_index("code")["close"]
+    q = common.live_quotes(tuple(sorted(hold)))
+    names = custom.names_of(list(hold))
+    rows = []
+    for c, v in sorted(hold.items(), key=lambda x: -x[1]):
+        x = q.get(c) or {}
+        newer = x.get("last") and x.get("date") is not None and x["date"] > last and px.get(c)
+        rows.append({"代號": c, "名稱": names.get(c, ""), "資料日市值": v, "資料日收盤": px.get(c),
+                     "即時價": x.get("last"), "今日漲跌": x.get("chg") if newer else None,
+                     "估計市值": v * x["last"] / px[c] if newer else v})
+    df = pd.DataFrame(rows)
+    base = res["nav"].iloc[-1]
+    total = res["cash"] + df["估計市值"].sum()
+    st.markdown("**即時估值**")
+    if not q:
+        st.caption("查不到即時報價（證交所連不上），下面是資料日的市值。")
+    common.kpis([
+        ("估計資產", f"{total:,.0f}", f"資料日 {last:%m-%d} 為 {base:,.0f} 元", True),
+        ("今日估計損益", common.signed_html(total / base - 1, 2), f"{total - base:+,.0f} 元"),
+        ("現金", f"{res['cash']:,.0f}", "元"),
+    ])
+    common.table(common.styled(df, fmt={"資料日市值": "{:,.0f}", "資料日收盤": "{:,.2f}", "即時價": "{:,.2f}",
+                                        "今日漲跌": "{:+.2%}", "估計市值": "{:,.0f}"}, signed=["今日漲跌"]),
+                 hide_index=True)
+    st.caption("只是估計：用證交所即時價（延遲約 5 秒）換算資料日的持股，不含今天可能觸發的停損等規則與交易成本；"
+               "報價日期沒有比資料日新（例如晚上已更新資料）時不加漲跌。正式淨值晚上更新資料後重算。")
 
 
 def _mine_edit(name: str, cur: pd.Series) -> None:

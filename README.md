@@ -143,6 +143,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `paper.py` | 模擬持股，每月記錄前 N 名並追蹤報酬 |
 | `mine.py` | 自選股即時模擬：自己挑股票，從最新資料日起往後記錄並追蹤（可月調） |
 | `custom.py` | 自選股模擬：自己挑股票、權重和起訖日回頭重播，對比 0050 |
+| `realtime.py` | 即時報價（證交所基本市況報導，上市上櫃，延遲約 5 秒）；只給個股頁與自選組合顯示，不進計算與紀錄 |
 | `diagnose.py` | 拆解綜合分數輸給同池等權的原因 |
 | `event_study.py` | 月營收與外資事件研究，輸出 `data/event_study.csv` |
 | `llm_replay.py` | LLM 決策的準前瞻回放：`run --dry-run` 估費用、`run` 回放 2026-07～09、`report` 選股檢定 |

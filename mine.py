@@ -8,6 +8,7 @@
   uv run mine.py new 科技 2330:50,2317:30,2454:20 [--monthly] [--capital 1000000]   # 建立組合，今天起算
   uv run mine.py new 低波 2330,2317,2454 --weighting inv_vol --max-weight 0.4 --rule stop_loss=0.1 --rule regime=ma
   uv run mine.py new 前30 - --source strategies/top30.toml --monthly                # 名單從策略帶入，每月照規則重選
+  uv run mine.py new 營收驚喜 - --source rev_surprise --weighting equal               # 財報驚喜事件：新公布的買、持有期滿賣
   uv run mine.py edit 科技 2330:40,2317:30,3711:30                                 # 改持股 / 權重，從最新資料日起生效
   uv run mine.py archive 科技                                                      # 封存（紀錄保留，不再更新）
   uv run mine.py                                                                   # 月調組合記新月份，重算並印出各組合摘要（update.py 會跑）
@@ -22,6 +23,8 @@
   - 選用的規則（建立時決定，之後不改；要換規則就建新組合，免得回頭改到過去的淨值）:
       名單來源 source：觀察名單（watchlist）、模型選股（model_picks，短中長期都看漲）、strategies/*.toml 的選股條件
         （只用它的選股，倉位與風險規則用這個組合自己的）。搭配 --monthly 時每月照同一規則重選
+        財報驚喜（rev_surprise 月營收、eps_surprise 盈餘，規則見 surprise.py）是事件名單：每次執行時名單有變就記一期
+        （新公布的買進、持有期滿的賣出；名單空了就全部賣掉留現金）。已持有的股票偏離目標不到半個單位就不調，省手續費
       加權 weighting：manual（照輸入的權重）、equal、inv_vol（過去 60 日波動倒數）、score（綜合分數高的多買）；
         max_weight 單檔上限，分不完的留現金。manual 以外在每次訊號日用當時的資料重算
       風險規則 risk：strategy.DEFAULTS["risk"] 的欄位（停損、停利、持有天數、大盤濾網、資產回落、目標波動），
@@ -35,6 +38,7 @@ from pathlib import Path
 import pandas as pd
 
 import strategy as S
+import surprise as SU
 from build_panel import OUT
 from custom import load_rets, parse_codes
 
@@ -45,9 +49,13 @@ MAX_STALE_DAYS = 7
 COLS = ["portfolio", "signal_date", "code", "weight", "recorded_at"]
 ROOT = Path(__file__).parent
 WEIGHTINGS = {"manual": "照輸入的權重", "equal": "等權", "inv_vol": "波動倒數（波動小的多買）", "score": "綜合分數高的多買"}
-SOURCES = {"watchlist": "觀察名單", "model_picks": "模型選股（短中長期都看漲）"}   # 另外可用 strategies/*.toml
+SOURCES = {"watchlist": "觀察名單", "model_picks": "模型選股（短中長期都看漲）",
+           "rev_surprise": "月營收驚喜（公布後持有 20 個交易日）", "eps_surprise": "盈餘驚喜（公布後持有 60 個交易日）"}
+EVENT_SOURCES = {"rev_surprise": "rev", "eps_surprise": "eps"}   # 事件名單，對應 surprise.KINDS；另外可用 strategies/*.toml
+REBALANCE = {"none": "只在改動時", "monthly": "每月調回", "events": "名單有變就調"}
 RISK_KEYS = tuple(S.DEFAULTS["risk"])
 HIST_DAYS = 420     # 大盤濾網（均線）與目標波動要往前看的日曆天數，重播時多載入這段報酬
+BAND = 0.5          # 事件組合：已持有的股票偏離目標不到半個單位（本金 ÷ 一般持股數 × 0.5）就不調
 
 
 def load_ledger() -> pd.DataFrame:
@@ -64,7 +72,7 @@ def _latest_signals(led: pd.DataFrame, name: str) -> dict[pd.Timestamp, pd.Serie
     out = {}
     for s, d in g.groupby("signal_date"):
         d = d[d["recorded_at"] == d["recorded_at"].max()]
-        out[pd.Timestamp(s)] = d.set_index("code")["weight"]
+        out[pd.Timestamp(s)] = d[d["code"] != ""].set_index("code")["weight"]     # 代號空白 = 這期全部留現金
     return dict(sorted(out.items()))
 
 
@@ -75,6 +83,8 @@ def data_date() -> pd.Timestamp:
 
 def _append(name: str, w: pd.Series, sig: pd.Timestamp) -> None:
     PAPER.mkdir(exist_ok=True)
+    if w.empty:                                          # 事件名單空了：記一列空白代號，重播時全部賣掉
+        w = pd.Series([0.0], index=[""])
     new = pd.DataFrame({"portfolio": name, "signal_date": sig, "code": w.index, "weight": w.values,
                         "recorded_at": pd.Timestamp(datetime.now())})
     led = load_ledger()
@@ -125,6 +135,8 @@ def source_label(source: str | None) -> str:
 def source_codes(source: str, sig: pd.Timestamp | None = None) -> list[str]:
     """名單來源在訊號日 sig 的股票（依來源自己的排序）。"""
     sig = sig if sig is not None else data_date()
+    if source in EVENT_SOURCES:
+        return SU.active_codes(EVENT_SOURCES[source], sig)
     if source == "watchlist":
         from daily import read_watchlist
         return read_watchlist()
@@ -147,6 +159,8 @@ def make_weights(w: pd.Series, weighting: str = "manual", max_weight: float = 1.
         raise ValueError(f"加權方式要是 {'、'.join(WEIGHTINGS)} 其中之一")
     if not 0 < max_weight <= 1:
         raise ValueError("單檔上限要在 0 到 1 之間")
+    if w.empty:
+        return pd.Series(dtype=float)
     if weighting == "manual":
         out = w / w.sum()
         return S._cap(out.copy(), None, max_weight).clip(upper=max_weight) if max_weight < 1 else out
@@ -192,14 +206,14 @@ def create(name: str, w: pd.Series | None, monthly: bool = False, capital: float
         if not source:
             raise ValueError("沒有股票：輸入代號，或選一個名單來源")
         w = pd.Series(1.0, index=source_codes(source, sig))
-        if w.empty:
+        if w.empty and source not in EVENT_SOURCES:      # 事件名單可以先空著，有新公布時才買
             raise ValueError(f"{source_label(source)}目前沒有股票")
     _check_codes(w, sig)
     w = make_weights(w, weighting, max_weight, sig)
     sig = signal_date if signal_date is not None else sig
     _append(name, w, sig)
-    meta[name] = {"capital": float(capital), "rebalance": "monthly" if monthly else "none",
-                  "created": str(sig.date()), "archived": False}
+    meta[name] = {"capital": float(capital), "created": str(sig.date()), "archived": False,
+                  "rebalance": "events" if source in EVENT_SOURCES else "monthly" if monthly else "none"}
     # 選用的規則只在有用到時寫入，沒用到的組合設定和以前一樣
     extra = {"weighting": weighting if weighting != "manual" else None,
              "max_weight": max_weight if max_weight < 1 else None, "risk": risk or None, "source": source or None}
@@ -224,7 +238,8 @@ def describe(m: dict) -> list[str]:
     """組合用了哪些規則（給畫面與 CLI 摘要）。"""
     risk = {**S.DEFAULTS["risk"], **m.get("risk", {})}
     out = [f"名單：{source_label(m.get('source'))}"
-           + ("，每月照規則重選" if m.get("source") and m["rebalance"] == "monthly" else ""),
+           + ("，每月照規則重選" if m.get("source") and m["rebalance"] == "monthly" else "")
+           + ("，新公布的買進、持有期滿的賣出" if m["rebalance"] == "events" else ""),
            f"加權：{WEIGHTINGS[m.get('weighting', 'manual')]}"
            + (f"，單檔上限 {m['max_weight']:.0%}" if m.get("max_weight") else "")]
     if risk["stop_loss"]:
@@ -252,10 +267,10 @@ def archive(name: str) -> None:
 
 
 def record_monthly() -> list[str]:
-    """月調組合：資料日進入新月份就把最近一次的目標權重再記一期。"""
+    """月調組合：資料日進入新月份就把最近一次的目標權重再記一期。事件組合：資料日比上一期新、名單有變就記一期。"""
     led, msgs = load_ledger(), []
     for name, m in load_meta().items():
-        if m["archived"] or m["rebalance"] != "monthly":
+        if m["archived"] or m["rebalance"] not in ("monthly", "events"):
             continue
         sigs = _latest_signals(led, name)
         last = max(sigs)
@@ -264,13 +279,16 @@ def record_monthly() -> list[str]:
         except ValueError as e:
             msgs.append(f"[{name}] 不記：{e}")
             continue
-        if sig.to_period("M") <= last.to_period("M"):
+        events = m["rebalance"] == "events"
+        if sig <= last if events else sig.to_period("M") <= last.to_period("M"):
             continue
         w = sigs[last]
         try:
             if m.get("source"):                          # 照名單來源重選，再照加權方式算權重
                 w = pd.Series(1.0, index=source_codes(m["source"], sig))
-                if w.empty:
+                if events and set(w.index) == set(sigs[last].index):
+                    continue
+                if w.empty and not events:
                     msgs.append(f"[{name}] 不記：{source_label(m['source'])}這期沒有股票，維持上期持股")
                     continue
             if m.get("source") or m.get("weighting", "manual") != "manual":
@@ -287,9 +305,18 @@ def replay(name: str, rets: pd.DataFrame | None = None) -> dict | None:
     """由已記錄的權重重播。還沒有成交日（等下一個交易日收盤進場）回傳 None。"""
     meta = load_meta()[name]
     sigs = _latest_signals(load_ledger(), name)
-    risk = {**S.DEFAULTS["risk"], **meta.get("risk", {})}
     if rets is None:
         rets = load_rets(min(sigs) - pd.Timedelta(days=HIST_DAYS))
+    res = _run(name, sigs, meta["capital"], meta.get("risk", {}), meta["rebalance"], rets)
+    if res is not None:
+        res["meta"] = meta
+    return res
+
+
+def _run(name: str, sigs: dict[pd.Timestamp, pd.Series], capital: float, risk: dict, rebalance: str,
+         rets: pd.DataFrame) -> dict | None:
+    """照訊號日的目標權重重播。"""
+    risk = {**S.DEFAULTS["risk"], **risk}
     idx = S.regime_index(rets, risk) if risk["regime"] == "ma" else None
     fixed = {}
     for s, w in sigs.items():
@@ -297,13 +324,15 @@ def replay(name: str, rets: pd.DataFrame | None = None) -> dict | None:
         fixed[s] = {"tw": w * mult, "tw_full": w * info.get("m_vol", 1.0), "rinfo": info,
                     "pool": w.index.tolist(), "picks": w.index.tolist()}
     cfg = {**json.loads(json.dumps(S.DEFAULTS)), "id": name, "name": name, "description": "",
-           "start": str(min(sigs).date()), "capital": meta["capital"], "risk": risk}
+           "start": str(min(sigs).date()), "capital": capital, "risk": risk}
+    if rebalance == "events":
+        n = pd.Series([len(w) for w in sigs.values() if len(w)])
+        cfg["position"]["min_trade"] = BAND * capital / n.median() if len(n) else 0
     res = S.simulate(cfg, pd.DataFrame(), rets, fixed=fixed)
     if res is None:
         return None
     res["perf"] = {k: S.perf(res["daily"][k]) for k in ("strategy", "pool", "etf")}
     res["signals"] = sigs
-    res["meta"] = meta
     return res
 
 
@@ -317,7 +346,7 @@ def main():
     n.add_argument("--capital", type=float, default=1_000_000)
     n.add_argument("--weighting", default="manual", choices=list(WEIGHTINGS))
     n.add_argument("--max-weight", type=float, default=1.0)
-    n.add_argument("--source", help="watchlist、model_picks 或 strategies/xxx.toml；codes 填 - 表示名單全部從來源帶入")
+    n.add_argument("--source", help=f"{'、'.join(SOURCES)} 或 strategies/xxx.toml；codes 填 - 表示名單全部從來源帶入")
     n.add_argument("--rule", action="append", default=[], help="風險規則，例 stop_loss=0.1、regime=ma，可重複")
     e = sub.add_parser("edit")
     e.add_argument("name")
@@ -358,7 +387,7 @@ def main():
             continue
         p, b = res["perf"]["strategy"], res["daily"]
         tot = lambda k: (1 + b[k]).prod() - 1
-        print(f"[{name}] 自 {m['created']} 起 {len(res['signals'])} 次訊號・{'每月調回' if m['rebalance'] == 'monthly' else '只在改動時調'}；"
+        print(f"[{name}] 自 {m['created']} 起 {len(res['signals'])} 次訊號・{REBALANCE[m['rebalance']]}；"
               f"累積 {tot('strategy'):+.2%}（同組等權 {tot('pool'):+.2%}、{S.ETF} {tot('etf'):+.2%}）"
               + (f"、最大回落 {p['mdd']:.2%}" if p else "") + f"、資產 {res['nav'].iloc[-1]:,.0f}")
 

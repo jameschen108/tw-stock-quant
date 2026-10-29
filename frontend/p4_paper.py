@@ -484,12 +484,17 @@ def _mine_create() -> None:
                        + ("…" if len(codes) > 30 else "") if codes else "這個來源目前沒有股票。")
         except Exception as e:
             st.warning("讀不到名單：" + common.scrub(e))
+    event = source in mine.EVENT_SOURCES
+    if event:
+        st.caption("財報公布後追價：驚喜分數在最近 12 個月公布事件的最高 10%、上市且成交量不在最低 20% 的股票，"
+                   "公布後隔一個交易日收盤買進，持有期滿賣出；每天收盤後名單有變就調整。"
+                   "2018–2025 回測與 2026 年樣本外都贏同條件的一般股票，但沒有贏 0050（規則見 surprise.py）。")
     weightings = list(mine.WEIGHTINGS) if source is None else [k for k in mine.WEIGHTINGS if k != "manual"]
     c1, c2, c3 = st.columns([2, 1, 2], vertical_alignment="bottom")
     weighting = c1.selectbox("加權方式", weightings, format_func=mine.WEIGHTINGS.get, key=f"mn_w_{source is None}")
     max_weight = c2.number_input("單檔上限", 0.05, 1.0, 1.0, 0.05, format="%.2f", key="mn_mw",
                                  help="0–1；1 = 不限，超過的分給其他股票，都到上限就留現金")
-    monthly = c3.checkbox("每月照規則重選並調回權重" if source else "每月調回目標權重", key="mn_monthly")
+    monthly = False if event else c3.checkbox("每月照規則重選並調回權重" if source else "每月調回目標權重", key="mn_monthly")
 
     risk = {}
     if st.toggle("加上風險規則（停損、停利、大盤濾網…）", key="mn_risk_on"):
@@ -536,7 +541,7 @@ def _mine_create() -> None:
 
 def _mine() -> None:
     st.caption("自己挑股票，從最新資料日起往後記錄（不補過去；要看過去用策略頁的「自選股回測」）。"
-               "隔一個交易日收盤進場。月調組合在新月份由 update.py 調回目標權重，其餘只在你改持股時調整。"
+               "隔一個交易日收盤進場。月調組合在新月份、財報驚喜組合在名單有變時由 update.py 記新一期，其餘只在你改持股時調整。"
                "紀錄只追加，不改寫。")
     meta = {k: v for k, v in mine.load_meta().items() if not v["archived"]}
     own, llm = [k for k in meta if not _is_llm_book(k)], [k for k in meta if _is_llm_book(k)]
@@ -555,7 +560,7 @@ def _mine() -> None:
     cur = sigs[max(sigs)]
     common.kpis([
         ("建立日", common.esc(m["created"]), f"本金 {m['capital']:,.0f} 元"),
-        ("調整", "每月調回" if m["rebalance"] == "monthly" else "只在改動時", f"{len(sigs)} 次訊號"),
+        ("調整", mine.REBALANCE[m["rebalance"]], f"{len(sigs)} 次訊號"),
         ("最近訊號", f"{max(sigs):%Y-%m-%d}", "隔一個交易日收盤成交"),
     ])
     st.caption("規則：" + "；".join(mine.describe(m)))
@@ -634,6 +639,8 @@ def _mine_edit(name: str, cur: pd.Series) -> None:
             st.caption(f"這個組合用「{mine.WEIGHTINGS[m['weighting']]}」，只看代號，權重會重算。")
         if m.get("source") and m["rebalance"] == "monthly":
             st.caption("下個月會照名單來源重選，這裡的修改只維持到那時。")
+        if m["rebalance"] == "events":
+            st.caption("事件名單下次有變動時會照規則重記，這裡的修改只維持到那時。")
         c1, c2 = st.columns(2)
         if c1.button("記錄新持股", key=f"mn_save_{name}"):
             try:

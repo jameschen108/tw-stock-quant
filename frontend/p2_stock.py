@@ -108,7 +108,8 @@ def _live(code: str, data_date: str) -> None:
         ("漲跌（對昨收）", common.signed_html(q["chg"], 2), f"昨收 {common.num(q['prev'])}"),
         ("今日高 / 低", f"{common.num(q['high'])} / {common.num(q['low'])}", f"開盤 {common.num(q['open'])}"),
         ("成交量", vol, f"買 {common.num(q['bid'])}・賣 {common.num(q['ask'])}"),
-        ("漲停 / 跌停", f"{common.num(q['limit_up'])} / {common.num(q['limit_down'])}", "證交所公布"),
+        ("漲停 / 跌停", f"{common.num(q['limit_up'])} / {common.num(q['limit_down'])}"
+         if q["limit_up"] or q["limit_down"] else "無限制", "證交所公布"),
     ])
     note = "證交所即時報價，延遲約 5 秒" + ("，盤中每 15 秒自動更新" if common.live_every() else "")
     if q["date"] is not None and q["date"] > pd.Timestamp(data_date):

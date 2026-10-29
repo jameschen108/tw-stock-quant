@@ -61,7 +61,9 @@ def _parse(m: dict) -> dict:
     return {"code": m.get("c"), "name": m.get("n"), "last": ref, "indicative": last is None and ref is not None,
             "prev": prev, "chg": (ref / prev - 1) if ref and prev else None,
             "open": _num(m.get("o")), "high": _num(m.get("h")), "low": _num(m.get("l")),
-            "limit_up": _num(m.get("u")), "limit_down": _num(m.get("w")), "volume": _num(m.get("v")),
+            # 沒有漲跌幅限制的（例如部分 ETF）證交所給漲停 9999.95、跌停空白
+            "limit_up": _num(m.get("u")) if (_num(m.get("u")) or 0) < 9999 else None,
+            "limit_down": _num(m.get("w")), "volume": _num(m.get("v")),
             "bid": bids[0] if bids else None, "ask": asks[0] if asks else None,
             "date": pd.Timestamp(d) if len(d) == 8 else None, "time": m.get("t")}
 

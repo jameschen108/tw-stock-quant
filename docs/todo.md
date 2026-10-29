@@ -44,7 +44,7 @@
 - [ ] 觀察名單提醒推播到手機（Telegram bot 或 email）
 - [ ] 模擬持股與策略的產業、市值、因子曝險隨時間變化（例如 LLM 組是不是只偏小型股）
 - [ ] 新 LLM 實驗組改成同批候選互相排序取前 K 名，取代沒有區分力的 conviction；另開組，不動原組
-- [ ] 即時股價：`realtime.py` 打證交所 `mis.twse.com.tw/stock/api/getStockInfo.jsp`（上市 `tse_`、上櫃 `otc_`，一次查多檔），個股頁與觀察名單顯示即時價、漲跌、時間，盤中每 10 秒更新；只顯示，不寫進 `data/`、不進因子／回測／LLM
+- [x] 即時股價：`realtime.py` 打證交所 `mis.twse.com.tw/stock/api/getStockInfo.jsp`（上市 `tse_`、上櫃 `otc_`，一次查多檔），個股頁與觀察名單顯示即時價、漲跌、時間，盤中每 10 秒更新；只顯示，不寫進 `data/`、不進因子／回測／LLM
 
 ## 舊功能改進
 

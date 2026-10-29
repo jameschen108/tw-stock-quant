@@ -96,7 +96,7 @@ def _hero(facts: dict, px: pd.DataFrame) -> None:
 
 
 def _live(code: str, data_date: str) -> None:
-    """即時報價（只顯示，不進事實表與模型）。盤中由 fragment 每 15 秒重跑。"""
+    """即時報價（只顯示，不進事實表與模型）。盤中由 fragment 每 10 秒重跑。"""
     q = common.live_quotes((code,)).get(code)
     if not q or q["last"] is None:
         st.caption("查不到即時報價（證交所連不上，或這檔今天沒有交易）。")
@@ -111,7 +111,7 @@ def _live(code: str, data_date: str) -> None:
         ("漲停 / 跌停", f"{common.num(q['limit_up'])} / {common.num(q['limit_down'])}"
          if q["limit_up"] or q["limit_down"] else "無限制", "證交所公布"),
     ])
-    note = "證交所即時報價，延遲約 5 秒" + ("，盤中每 15 秒自動更新" if common.live_every() else "")
+    note = "證交所即時報價，延遲約 5 秒" + ("，盤中每 10 秒自動更新" if common.live_every() else "")
     if q["date"] is not None and q["date"] > pd.Timestamp(data_date):
         note += f"。今天的行情晚上更新資料後才會進到上面的分數、標籤與圖表（目前到 {data_date}）"
     st.caption(note + "。")

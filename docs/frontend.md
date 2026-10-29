@@ -36,7 +36,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 | 功能 | 來源 |
 |---|---|
-| 觀察名單表：收盤、1 日 / 5 日報酬、短中長期標籤、綜合分數百分位與變化、外資 / 融資 / 法人的 5 日變化 | `daily.watch_rows(codes, prev, first_run)`；名單用 `daily.read_watchlist()`，上次狀態在 `data/daily_state.json` |
+| 觀察名單表：收盤、即時價與今日漲跌（`common.live_quotes`，盤中每 10 秒更新）、1 日 / 5 日報酬、短中長期標籤、綜合分數百分位與變化、外資 / 融資 / 法人的 5 日變化 | `daily.watch_rows(codes, prev, first_run)`；名單用 `daily.read_watchlist()`，上次狀態在 `data/daily_state.json` |
 | 提醒（漲跌超過 7%、綜合分數變化 15 分以上、外資 5 日變化 1 點以上、融資 5 日變化 15% 以上、標籤改變）與新公布 | 同上，每列的 `alerts`、`events` |
 | 編輯觀察名單 | 讀寫 `watchlist.txt`（一行一個代號）。這是唯一允許前端寫入的設定檔 |
 | 模型選股清單（短中長期都看漲） | `daily.model_picks()` → `(calib, DataFrame)` |
@@ -52,7 +52,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 |---|---|
 | 全部事實（一次取得） | `report.build_facts(code, asof)` → `(facts, series)`；`asof` 預設最新價格日，可以選過去日期做時點回溯 |
 | 價格走勢、52 週高低、均線差距 | `series["px"]`、`facts["price"]` |
-| 即時報價（成交價、漲跌、高低、成交量、漲跌停；盤中每 15 秒更新，時點回溯時不顯示） | `realtime.quotes([code])`（`common.live_quotes` 快取 10 秒）；只顯示，不進事實表 |
+| 即時報價（成交價、漲跌、高低、成交量、漲跌停；盤中每 10 秒更新，時點回溯時不顯示） | `realtime.quotes([code])`（`common.live_quotes` 快取 10 秒）；只顯示，不進事實表 |
 | 短中長期看法：標籤、百分位、樣本外歷史校準、可靠度 | `facts["outlook"]`（來自 `outlook.stock_outlook`）；歷史走勢用 `outlook.load_outlook(code)` |
 | 綜合分數與四組百分位（營收動能、品質、價值、趨勢） | `facts["scores"]`、`series["trend"]` |
 | 月營收 | `facts["revenue"]`、`series["rv"]` |

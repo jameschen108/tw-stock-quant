@@ -444,15 +444,15 @@ def cached_paper_summary(_sig: str) -> dict:
     return paper.summary()
 
 
-@st.cache_data(show_spinner=False, ttl=10, max_entries=32)
+@st.cache_data(show_spinner=False, ttl=5, max_entries=32)
 def live_quotes(codes: tuple[str, ...]) -> dict:
-    """即時報價（證交所，延遲約 5 秒）；10 秒內同一組代號不重查。"""
+    """即時報價（證交所，延遲約 5 秒）；5 秒內同一組代號不重查。"""
     return realtime.quotes(list(codes))
 
 
 def live_every() -> int | None:
-    """盤中每 15 秒自動更新即時區塊，盤後不更新。"""
-    return 15 if realtime.session_open() else None
+    """盤中每 10 秒自動更新即時區塊，盤後不更新。"""
+    return 10 if realtime.session_open() else None
 
 
 def goto_stock(code: str) -> None:

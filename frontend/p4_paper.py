@@ -529,7 +529,7 @@ def _mine() -> None:
 
 
 def _mine_live(res: dict) -> None:
-    """持股的即時估值：資料日的部位市值 × 即時價 ÷ 資料日收盤。只顯示，不寫進紀錄；盤中由 fragment 每 15 秒重跑。"""
+    """持股的即時估值：資料日的部位市值 × 即時價 ÷ 資料日收盤。只顯示，不寫進紀錄；盤中由 fragment 每 10 秒重跑。"""
     hold = {c: v for c, v in res["hold"].items() if v > 0}
     if not hold:
         return

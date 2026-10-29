@@ -47,9 +47,10 @@ def window_return(daily: pd.Series, n: int) -> float:
     return float((1 + w).prod() - 1) if len(w) == n else np.nan
 
 
-def load_prices(asof=None):
+def load_prices(asof=None, since=None):
     px = pd.read_parquet(ROOT / "data/prices_daily.parquet",
-                         columns=["date", "code", "adj_close", "value", "ret_suspect"])
+                         columns=["date", "code", "adj_close", "value", "ret_suspect"],
+                         filters=[("date", ">=", pd.Timestamp(since))] if since is not None else None)
     if asof is not None:
         px = px[px["date"] <= pd.Timestamp(asof)]
     adj = px.pivot(index="date", columns="code", values="adj_close")
@@ -57,6 +58,11 @@ def load_prices(asof=None):
     val = px.pivot(index="date", columns="code", values="value").reindex_like(adj)
     rets = adj.pct_change(fill_method=None).mask(sus)
     return rets, val
+
+
+def index_levels(daily: pd.Series, n: int) -> pd.Series:
+    """最近 n 個交易日的累積指數，窗口起點前一天 = 1。"""
+    return (1 + daily.dropna().iloc[-n:]).cumprod()
 
 
 def summarize(themes: dict[str, dict], rets: pd.DataFrame, val: pd.DataFrame) -> pd.DataFrame:

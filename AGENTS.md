@@ -11,7 +11,8 @@
 # 分支規則
 
 - 不要直接 commit 或 push 到 `main`，一律開 feature branch，透過 PR 合併。
-- 一個 PR 對應一條分支。PR 合併後這條分支就結束，不要接著用它做別的事；新工作從最新的 `origin/main` 切新分支（`git fetch origin` 後 `git switch -c <名稱> origin/main`）。
+- 一條分支做一個主題，可以包含幾個相關的功能或修正，攢到主題做完再開 PR，不必每個小改動都單獨開。錯字、README 一兩行這類小修，併進正在做的相關分支即可。
+- PR 合併後這條分支就結束，不要接著用它做別的事；新工作從最新的 `origin/main` 切新分支（`git fetch origin` 後 `git switch -c <名稱> origin/main`）。
 - 分支名稱用功能描述，加前綴 `feat/`、`fix/`、`docs/`，例如 `feat/theme-page`、`fix/delist-return`。名稱要和分支內容對得上。
 - 分支要跟上 `main` 時用 merge（`git merge origin/main`），不要 rebase 已推送的分支。專案歷史本來就是 merge 為主。
 - 不要 force push（含 `--force-with-lease`），除非使用者明確要求。

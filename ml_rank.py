@@ -12,6 +12,7 @@
 用法:
   uv run ml_rank.py                       # 2015 起逐月預測，報 2015–2018 與樣本外 2019 起
   uv run ml_rank.py --top 30 --top-min-value 2e7
+  uv run ml_rank.py --llm                 # 另做 LLM 同候選比較（讀 llm_replay.jsonl，不呼叫 API）
 
 設計（固定在看結果之前）:
   特徵    composite.py 四組 13 個因子（營收動能、品質、價值、趨勢），前處理同 composite.py：
@@ -24,13 +25,22 @@
   比較    同股票池、同 Top-N 與成本（composite.top_n）、同五分位評估（backtest.evaluate）；
           另算模型 − comp_equal 的逐月 Top-N 淨報酬差，Newey-West t（lag 3）
 
+LLM 同候選比較（--llm）:
+  候選與 LLM 決定 = llm_replay.py 的回放紀錄（2026-07～09 三批，每批最後一輪；wait 到最後算放棄）。
+  每批在資料時點重算全市場因子（factors.build，含當天公布的營收，和 LLM 看到的資訊對齊），
+  用該年度重訓的模型打分；每批從同一群候選挑和 LLM buy 一樣多檔：Elastic Net、樹模型、comp_equal 各取前 k 名。
+  報酬同 llm_replay.py：資料時點隔一個交易日收盤進場，之後 20、60 個交易日，不扣成本、等權；
+  另附每批隨機挑 k 檔 N_RANDOM 次的分布，與批內「分數對報酬」的等級相關。三批、約 100 檔候選，樣本很小。
+
 注意：2019 年後的資料在開發綜合分數時已被反覆看過（因子與趨勢組是看全期結果挑的），所以樣本外對
 綜合分數本身也不是乾淨的保留集；這裡兩種模型只各跑一個預先設定的網格，不再依結果調整。
 輸出 data/bt/ml_scores.parquet（逐期預測）、data/bt/ml_top_returns.parquet、data/bt/ml_meta.json（每次重訓的參數）。
 """
 import argparse
 import json
+import random
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -48,6 +58,10 @@ LABEL_LAG = 2                       # 在 t 只能用到 t−LABEL_LAG 期的標
 EN_GRID = [{"alpha": a, "l1_ratio": r} for a in (1e-4, 1e-3, 1e-2) for r in (0.1, 0.5, 0.9)]
 GBT_GRID = [{"max_depth": d, "max_iter": n, "learning_rate": 0.05, "min_samples_leaf": 200}
             for d in (2, 3) for n in (100, 300)]
+
+LLM_LOG = OUT / "paper" / "llm_replay.jsonl"
+HORIZONS = [20, 60]
+N_RANDOM = 1000
 
 Fit = Callable[[pd.DataFrame, pd.Series], Callable[[pd.DataFrame], np.ndarray]]
 
@@ -105,8 +119,10 @@ def gbt(meta: list) -> Fit:
     return tuned(lambda p: HistGradientBoostingRegressor(**p, random_state=0), GBT_GRID, meta)
 
 
-def walk_forward(X: pd.DataFrame, y: pd.Series, fit: Fit, start: str = PRED_START) -> pd.Series:
-    """X、y 的 index = (date, code)。每年 1 月（或第一個預測期）重訓，在 t 只用 t−LABEL_LAG 期以前有標籤的列。"""
+def walk_forward(X: pd.DataFrame, y: pd.Series, fit: Fit, start: str = PRED_START,
+                 models: dict | None = None) -> pd.Series:
+    """X、y 的 index = (date, code)。每年 1 月（或第一個預測期）重訓，在 t 只用 t−LABEL_LAG 期以前有標籤的列。
+    models 有給時，記下每年用的模型（{年: 預測函式}），給同年度的其他快照用。"""
     dates = np.sort(X.index.get_level_values(0).unique())
     lvl = X.index.get_level_values(0)
     ok = X.notna().all(axis=1)
@@ -118,10 +134,118 @@ def walk_forward(X: pd.DataFrame, y: pd.Series, fit: Fit, start: str = PRED_STAR
         if model is None or t.year != year:
             train = ok & y.notna() & (lvl <= dates[i - LABEL_LAG])
             model, year = fit(X[train], y[train]), t.year
+            if models is not None:
+                models[year] = model
         rows = ok & (lvl == t)
         if rows.any():
             out.append(pd.Series(model(X[rows]), index=X.index[rows]))
     return pd.concat(out) if out else pd.Series(dtype=float)
+
+
+# ---------------------------------------------------------------- LLM 同候選比較
+
+def llm_finals(path=LLM_LOG) -> pd.DataFrame:
+    """回放紀錄每批每檔的最終決定（同 llm_replay.finals）：最後一輪；最後還是 wait 算放棄。只讀不寫。"""
+    log = pd.DataFrame([json.loads(x) for x in path.read_text().splitlines() if x.strip()])
+    last = log.sort_values("round").groupby(["model", "batch", "code"]).last().reset_index()
+    last.loc[last["decision"] == "wait", "decision"] = "放棄"
+    return last[["model", "batch", "code", "name", "decision"]]
+
+
+def window_returns(rets: pd.DataFrame, codes, signal: pd.Timestamp) -> dict[int, pd.Series]:
+    """同 llm_replay.window_returns：signal 之後第一個交易日收盤進場，持有 H 個交易日；資料不夠長給 NaN。"""
+    days = rets.index
+    after = days[days > signal]
+    out = {}
+    for h in HORIZONS:
+        if len(after) <= h:
+            out[h] = pd.Series(np.nan, index=codes)
+            continue
+        w = (days > after[0]) & (days <= after[h])
+        out[h] = (1 + rets.loc[w].reindex(columns=codes).fillna(0)).prod() - 1
+    return out
+
+
+def _spearman(a: pd.Series, b: pd.Series) -> float:
+    return a.rank().corr(b.rank())
+
+
+def compare_picks(ev: pd.DataFrame, scores: list[str], seed: str = "ml_vs_llm") -> dict:
+    """ev：batch、code、decision、r{H}、各分數。每批 k = LLM buy 檔數，各分數取前 k 名（缺分數排最後），
+    和 LLM buy、全部候選、隨機挑 k 檔比平均報酬；另算批內分數對報酬的 Spearman 平均。"""
+    out = {}
+    for h in HORIZONS:
+        d = ev.dropna(subset=[f"r{h}"])
+        if not len(d) or not (d["decision"] == "buy").any():
+            continue
+        picks = {"LLM buy": [], **{s: [] for s in scores}}
+        groups, ic = [], {s: [] for s in [*scores, "LLM buy"]}
+        for _, g in d.groupby("batch"):
+            k = int((g["decision"] == "buy").sum())
+            r = g[f"r{h}"]
+            groups.append((r.to_numpy(), k))
+            picks["LLM buy"] += r[g["decision"] == "buy"].tolist()
+            ic["LLM buy"].append(_spearman((g["decision"] == "buy").astype(float), r))
+            for s in scores:
+                picks[s] += r[g[s].fillna(-np.inf).rank(method="first", ascending=False) <= k].tolist()
+                ic[s].append(_spearman(g[s], r))
+        rng = random.Random(f"{seed}|{h}")
+        draws = pd.Series([np.mean([x for r, k in groups for x in rng.sample(list(r), k)]) for _ in range(N_RANDOM)])
+        out[h] = {"n_batch": len(groups), "n": len(d), "k": sum(k for _, k in groups), "all": float(d[f"r{h}"].mean()),
+                  "rand_p5": float(draws.quantile(0.05)), "rand_p50": float(draws.median()),
+                  "rand_p95": float(draws.quantile(0.95)),
+                  "picks": {s: {"mean": float(np.mean(v)), "pctile": float((draws < np.mean(v)).mean()),
+                                "batch_ic": float(np.nanmean(ic[s]))} for s, v in picks.items()}}
+    return out
+
+
+def snapshot(dates: list[pd.Timestamp]) -> pd.DataFrame:
+    """資料時點的全市場因子（含當天公布的營收、財報）、趨勢特徵，股票池同主程式。"""
+    import factors as F
+    df = F.build(reb=pd.DatetimeIndex(dates), same_day=True)
+    tf, _ = C.trend_features(df["date"].unique())
+    df = df.merge(tf, on=["date", "code"], how="left")
+    return universe(df, 5, 5e6, 120).reset_index(drop=True)
+
+
+def llm_compare(models: dict[str, dict], scores_out: Path) -> None:
+    from custom import load_rets
+    fin = llm_finals()
+    batches = sorted(pd.Timestamp(b) for b in fin["batch"].unique())
+    snap = snapshot(batches)
+    gs = C.group_scores(snap)
+    eq = pd.DataFrame(1 / len(C.GROUPS), index=pd.DatetimeIndex(batches), columns=list(C.GROUPS))
+    snap["comp_equal"] = C.combine(gs, eq)
+    Xs = features(snap)
+    ok = Xs.notna().all(axis=1)
+    for name, by_year in models.items():
+        snap[name] = np.nan
+        for b in batches:
+            rows = ok & (snap["date"] == b)
+            snap.loc[rows, name] = by_year[b.year](Xs[rows])
+    rets = load_rets(batches[0])
+    rows = []
+    for (model, b), g in fin.groupby(["model", "batch"]):
+        b = pd.Timestamp(b)
+        sc = snap[snap["date"] == b].set_index("code").reindex(g["code"])
+        wr = window_returns(rets, list(g["code"]), b)
+        e = g.assign(**{s: sc[s].to_numpy() for s in ["comp_equal", *models]},
+                     **{f"r{h}": wr[h].reindex(g["code"]).to_numpy() for h in HORIZONS})
+        rows.append(e)
+    ev = pd.concat(rows, ignore_index=True)
+    ev.to_csv(scores_out, index=False)
+    print(f"\nLLM 同候選比較（{', '.join(ev['model'].unique())}，回放 {len(batches)} 批，"
+          f"候選 {len(ev)} 檔，有模型分數 {int(ev['ml_en'].notna().sum())} 檔）")
+    for model, e in ev.groupby("model"):
+        res = compare_picks(e, ["ml_en", "ml_gbt", "comp_equal"])
+        for h, t in res.items():
+            print(f"\n  {h} 日（{t['n_batch']} 批、{t['n']} 檔有完整報酬，每批挑和 LLM buy 一樣多檔，共 {t['k']} 檔）:"
+                  f"\n    全部候選 {t['all']:+.2%}；隨機 {N_RANDOM} 次中位數 {t['rand_p50']:+.2%}"
+                  f"（90% 區間 {t['rand_p5']:+.2%} ~ {t['rand_p95']:+.2%}）")
+            for s, v in t["picks"].items():
+                print(f"    {s:10s} {v['mean']:+.2%}　隨機分布第 {v['pctile'] * 100:.0f} 百分位"
+                      f"　批內等級相關 {v['batch_ic']:+.3f}")
+    print(f"\n明細：{scores_out}")
 
 
 # ---------------------------------------------------------------- 主程式
@@ -131,6 +255,7 @@ def main():
     ap.add_argument("--start", default="2011-01")
     ap.add_argument("--top", type=int, default=30)
     ap.add_argument("--top-min-value", type=float, default=2e7)
+    ap.add_argument("--llm", action="store_true", help="另做 LLM 同候選比較")
     a = ap.parse_args()
 
     C.GROUPS["trend"] = C.TREND
@@ -145,8 +270,9 @@ def main():
     y = label(df).set_axis(X.index)
 
     meta = {"en": [], "gbt": []}
-    preds = {"ml_en": walk_forward(X, y, elastic_net(meta["en"])),
-             "ml_gbt": walk_forward(X, y, gbt(meta["gbt"]))}
+    models = {"ml_en": {}, "ml_gbt": {}}
+    preds = {"ml_en": walk_forward(X, y, elastic_net(meta["en"]), models=models["ml_en"]),
+             "ml_gbt": walk_forward(X, y, gbt(meta["gbt"]), models=models["ml_gbt"])}
     key = pd.MultiIndex.from_frame(gs[["date", "code"]])
     cands = {"comp_equal": C.combine(gs, W["equal"]), "comp_wf_ic": C.combine(gs, W["wf_ic"])}
     cands |= {k: pd.Series(v.reindex(key).to_numpy(), index=gs.index) for k, v in preds.items()}
@@ -190,6 +316,8 @@ def main():
     pd.DataFrame({k: t["net"] for k, t in tops.items()} | {"mkt": tops["comp_equal"]["mkt"]}) \
         .to_parquet(out / "ml_top_returns.parquet")
     (out / "ml_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    if a.llm:
+        llm_compare(models, out / "ml_vs_llm.csv")
 
 
 if __name__ == "__main__":

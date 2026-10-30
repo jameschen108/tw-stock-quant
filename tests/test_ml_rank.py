@@ -1,6 +1,9 @@
-"""ml_rank.py：特徵只用同期資料、滾動訓練只用已到期的標籤（不需要 scikit-learn）。"""
+"""ml_rank.py：特徵只用同期資料、滾動訓練只用已到期的標籤、LLM 同候選比較（不需要 scikit-learn）。"""
+import json
+
 import numpy as np
 import pandas as pd
+import pytest
 
 import ml_rank as M
 
@@ -65,3 +68,39 @@ def test_walk_forward_learns_signal():
     pred = M.walk_forward(X, y, ols([]), start="2013-01-31")
     ic = M.date_ic(pred.to_numpy(), y.reindex(pred.index), pd.Series(pred.index.get_level_values(0)))
     assert ic > 0.1
+
+
+def test_compare_picks_takes_top_k_per_batch():
+    ev = pd.DataFrame({
+        "batch": ["b1"] * 4 + ["b2"] * 4,
+        "decision": ["buy", "skip", "skip", "放棄", "buy", "buy", "skip", "skip"],
+        "r20": [0.01, 0.10, -0.05, 0.02, 0.03, -0.02, 0.08, 0.00],
+        "r60": np.nan,
+        "s": [0.0, 3.0, 1.0, 2.0, np.nan, 1.0, 3.0, 2.0],       # b1 取 1 檔（0.10），b2 取 2 檔（0.08、0.00）
+    })
+    res = M.compare_picks(ev, ["s"])
+    assert set(res) == {20}
+    t = res[20]
+    assert t["k"] == 3 and t["n"] == 8
+    assert t["picks"]["s"]["mean"] == pytest.approx((0.10 + 0.08 + 0.00) / 3)
+    assert t["picks"]["LLM buy"]["mean"] == pytest.approx((0.01 + 0.03 - 0.02) / 3)
+    assert t["rand_p5"] <= t["rand_p50"] <= t["rand_p95"]
+
+
+def test_llm_finals_last_round_and_wait(tmp_path):
+    rows = [{"model": "m", "batch": "2026-07-13", "code": "1101", "name": "a", "round": 0, "decision": "wait"},
+            {"model": "m", "batch": "2026-07-13", "code": "1101", "name": "a", "round": 1, "decision": "buy"},
+            {"model": "m", "batch": "2026-07-13", "code": "1102", "name": "b", "round": 0, "decision": "wait"}]
+    f = tmp_path / "log.jsonl"
+    f.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = M.llm_finals(f).set_index("code")["decision"]
+    assert out.to_dict() == {"1101": "buy", "1102": "放棄"}
+
+
+def test_window_returns_enter_after_signal():
+    days = pd.bdate_range("2026-07-01", periods=80)
+    rets = pd.DataFrame({"1101": 0.01}, index=days)
+    wr = M.window_returns(rets, ["1101"], days[2])
+    assert wr[20]["1101"] == pytest.approx(1.01 ** 20 - 1)              # 第 4 天收盤進場，持有 20 天
+    assert wr[60]["1101"] == pytest.approx(1.01 ** 60 - 1)
+    assert np.isnan(M.window_returns(rets, ["1101"], days[30])[60]["1101"])

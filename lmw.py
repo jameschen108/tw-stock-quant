@@ -10,6 +10,8 @@ Statistical Inference, and Empirical Implementation. Journal of Finance, 55(4), 
 用法:
   uv run lmw.py               # 偵測全部歷史、校準、和 patterns.py 比較，存最新一天成立中的形態
   uv run lmw.py --latest      # 只偵測最近一段、存最新形態（沿用既有校準）
+  uv run lmw.py --fixed-h auto           # 對照版：全部視窗用同一個事前固定的頻寬（規則見下）
+  uv run lmw.py --fixed-h auto --latest
 
 方法（照原文，標「改編」的是本專案的調整）:
   - 每個交易日 T 取 L = l + d = 35 + 3 天的還原收盤價視窗，對時間做 Nadaraya-Watson 核迴歸（高斯核）
@@ -21,10 +23,14 @@ Statistical Inference, and Empirical Implementation. Journal of Finance, 55(4), 
   - 雙重頂底（改編）：原文的 Ea 取視窗內 E1 之後最高（最低）的極值；這裡限定在同一組 E1…E5 內
   - 方向（改編）：原文只檢定形態後報酬分布是否不同，不指定漲跌；這裡照技術分析慣例，頂部形態記看跌、
     底部形態記看漲，再用 patterns.py 的產業中性超額與 Newey-West t 校準
+  - 對照版（改編，--fixed-h）：台股日價格接近隨機漫步，CV 有一半視窗選到候選下限，乘 0.3 後幾乎沒有平滑，
+    每 35 日約 15 個極值，形態次數暴增。對照版全部視窗用同一個頻寬，事前規則：抽樣 60 檔、
+    取「每 35 日視窗極值個數中位數 ≤ 6」的最小頻寬（原文例圖約 5–7 個極值，目測）。
+    只看價格、不看任何報酬；兩版都保留輸出，比較時算兩組嘗試，不挑好看的那版
   - 分布檢定：形態後隔日報酬（用前 250 日平均與標準差標準化，改編：原文用整段期間）對全部股票日的
     二樣本 Kolmogorov-Smirnov 檢定；樣本有時間與橫斷面相依，p 值偏樂觀
 
-輸出 data/patterns_lmw_calib.json、data/patterns_lmw_latest.parquet。和 patterns.py 一樣，
+輸出 data/patterns_lmw_calib.json、data/patterns_lmw_latest.parquet（對照版檔名加 _fixed）。和 patterns.py 一樣，
 沒通過校準的形態照樣輸出、標「歷史上不可靠」，不能當買賣理由；形態 × 期間的多重檢定要打折看。
 """
 import argparse
@@ -46,6 +52,8 @@ H_SCALE = 0.3
 HS_TOL, RECT_TOL, DBL_TOL, DBL_GAP = 0.015, 0.0075, 0.015, 22
 NORM_DAYS = 250
 KS_SAMPLE = 300_000                        # 無條件分布抽樣數（固定亂數種子）
+FIXED_GRID = np.arange(0.5, 8.01, 0.25)    # 對照版的頻寬候選（交易日）
+TARGET_EXT = 6                             # 對照版：每 L_DAYS 日極值個數中位數的上限
 
 LEVELS = ["上緣", "下緣"]                  # E1…E5 中高點的平均、低點的平均
 # 名稱 -> (方向, 類別, 中文名, 關鍵價位名稱)；格式同 patterns.PATTERNS
@@ -86,13 +94,22 @@ def _smoothers() -> tuple[np.ndarray, np.ndarray]:
 LOO, FIT = _smoothers()
 
 
+def kernel(h: float) -> np.ndarray:
+    """固定頻寬 h 的平滑矩陣 (WIN, WIN)。"""
+    x = np.arange(WIN)
+    k = np.exp(-0.5 * ((x[:, None] - x[None, :]) / h) ** 2)
+    return k / k.sum(1, keepdims=True)
+
+
 def cv_bandwidth(win: np.ndarray) -> np.ndarray:
     """視窗 (N, WIN) → 每列 CV 選到的 H_GRID 位置。"""
     return np.stack([((win - win @ s.T) ** 2).mean(1) for s in LOO], axis=1).argmin(1)
 
 
-def smooth(win: np.ndarray) -> np.ndarray:
-    """視窗 (N, WIN) → 平滑曲線；每列用自己的 CV 頻寬 × 0.3。"""
+def smooth(win: np.ndarray, h: float | None = None) -> np.ndarray:
+    """視窗 (N, WIN) → 平滑曲線；h=None 每列用自己的 CV 頻寬 × 0.3，否則全部用 h。"""
+    if h is not None:
+        return win @ kernel(h).T
     best = cv_bandwidth(win)
     out = np.empty_like(win)
     for k in np.unique(best):
@@ -141,7 +158,7 @@ def classify(e: np.ndarray, t: np.ndarray, first: np.ndarray) -> dict[str, np.nd
     return out
 
 
-def detect_one(c: np.ndarray) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
+def detect_one(c: np.ndarray, h: float | None = None) -> tuple[dict[str, np.ndarray], np.ndarray, np.ndarray]:
     """單一股票的還原收盤 (T,) → (各形態成立日 bool (T,), 上緣 (T,), 下緣 (T,))。成立日 = 視窗最後一天。"""
     n = len(c)
     hits = {k: np.zeros(n, bool) for k in PATTERNS}
@@ -154,7 +171,7 @@ def detect_one(c: np.ndarray) -> tuple[dict[str, np.ndarray], np.ndarray, np.nda
     if not len(rows):
         return hits, top, bot
     w = win[rows]
-    typ = extrema(smooth(w))
+    typ = extrema(smooth(w, h))
     last = L_DAYS - 1
     cand = typ[:, last] != 0
     w, typ, rows = w[cand], typ[cand, :L_DAYS], rows[cand]
@@ -183,16 +200,16 @@ def detect_one(c: np.ndarray) -> tuple[dict[str, np.ndarray], np.ndarray, np.nda
     return hits, top, bot
 
 
-def detect(w: dict, keep_levels: int = P.EVENT_DAYS) -> tuple[dict, dict]:
-    """格式同 patterns.detect：hits[名稱] bool 寬表；levels[名稱][價位名] 只留最後 keep_levels 天。"""
+def detect(w: dict, keep_levels: int = P.EVENT_DAYS, h: float | None = None) -> tuple[dict, dict]:
+    """h = None 用 CV 頻寬（原文），否則固定頻寬（對照版）。格式同 patterns.detect：hits[名稱] bool 寬表；levels[名稱][價位名] 只留最後 keep_levels 天。"""
     c = w["adj_close"].ffill(limit=5)
     shape = c.shape
     H = {k: np.zeros(shape, bool) for k in PATTERNS}
     top, bot = np.full(shape, np.nan), np.full(shape, np.nan)
     for j in range(shape[1]):
-        h, tp, bt = detect_one(c.iloc[:, j].to_numpy(float))
+        hj, tp, bt = detect_one(c.iloc[:, j].to_numpy(float), h)
         for k in PATTERNS:
-            H[k][:, j] = h[k]
+            H[k][:, j] = hj[k]
         top[:, j], bot[:, j] = tp, bt
     df = lambda x: pd.DataFrame(x, index=c.index, columns=c.columns)
     hits = {k: df(v) & c.notna() for k, v in H.items()}
@@ -249,36 +266,69 @@ def ks_tests(w: dict, uni: pd.DataFrame, hits: dict) -> dict:
 
 # ---------------------------------------------------------------- 主程式
 
-def diagnose(w: dict, n_codes: int = 60) -> dict:
-    """抽樣股票：CV 頻寬落在候選下限的比例、每 l 日視窗的極值個數（看平滑程度）。"""
+def _sample_windows(w: dict, n_codes: int = 60) -> list[np.ndarray]:
+    """抽樣股票的完整視窗（固定亂數種子）。"""
     c = w["adj_close"].ffill(limit=5)
     cols = np.random.default_rng(0).choice(c.columns, min(n_codes, c.shape[1]), replace=False)
-    best, n_ext = [], []
+    out = []
     for col in cols:
-        win = sliding_window_view(c[col].to_numpy(float), WIN) if len(c) >= WIN else np.empty((0, WIN))
-        win = win[~np.isnan(win).any(1)]
-        if len(win):
-            best.append(cv_bandwidth(win))
-            n_ext.append((extrema(smooth(win))[:, :L_DAYS] != 0).sum(1))
-    if not best:
+        x = c[col].to_numpy(float)
+        if len(x) >= WIN:
+            win = sliding_window_view(x, WIN)
+            win = win[~np.isnan(win).any(1)]
+            if len(win):
+                out.append(win)
+    return out
+
+
+def _n_extrema(wins: list[np.ndarray], h: float | None) -> float:
+    return float(np.median(np.concatenate([(extrema(smooth(x, h))[:, :L_DAYS] != 0).sum(1) for x in wins])))
+
+
+def pick_fixed_h(w: dict) -> tuple[float, dict]:
+    """對照版的事前頻寬：極值個數中位數 ≤ TARGET_EXT 的最小頻寬。只用價格，不看報酬。"""
+    wins = _sample_windows(w)
+    table = {}
+    for h in FIXED_GRID:
+        table[float(h)] = _n_extrema(wins, float(h))
+        if table[float(h)] <= TARGET_EXT:
+            return float(h), table
+    return float(FIXED_GRID[-1]), table
+
+
+def diagnose(w: dict, h: float | None = None) -> dict:
+    """抽樣股票：CV 頻寬落在候選下限的比例（CV 版）、每 l 日視窗的極值個數（看平滑程度）。"""
+    wins = _sample_windows(w)
+    if not wins:
         return {}
-    b, e = np.concatenate(best), np.concatenate(n_ext)
-    return {"at_grid_min_pct": round(float((b == 0).mean() * 100), 1),
-            "median_h_cv": round(float(np.median(H_GRID[b])), 2),
-            "median_extrema_per_window": float(np.median(e)), "n_codes": len(cols)}
+    out = {"median_extrema_per_window": _n_extrema(wins, h), "n_codes": len(wins)}
+    if h is None:
+        b = np.concatenate([cv_bandwidth(x) for x in wins])
+        out |= {"at_grid_min_pct": round(float((b == 0).mean() * 100), 1),
+                "median_h_cv": round(float(np.median(H_GRID[b])), 2)}
+    return out
 
 
-def compare(cal: dict) -> pd.DataFrame:
-    """樣本外 H = PRIMARY：LMW 形態 vs patterns.py 規則式形態（讀 data/patterns_calib.json）。"""
+# ---------------------------------------------------------------- 主程式
+
+def _files(fixed: bool) -> tuple:
+    tag = "_fixed" if fixed else ""
+    return OUT / f"patterns_lmw{tag}_calib.json", OUT / f"patterns_lmw{tag}_latest.parquet"
+
+
+def compare() -> pd.DataFrame:
+    """樣本外 H = PRIMARY：LMW（CV 頻寬）、LMW（固定頻寬）、patterns.py 規則式，讀各自的校準檔。"""
     rows = []
-    old_f = OUT / "patterns_calib.json"
-    old = json.loads(old_f.read_text()) if old_f.exists() else {}
-    for src, c, spec in (("LMW", cal, PATTERNS), ("規則式", old, P.PATTERNS)):
+    srcs = [("LMW-CV", _files(False)[0], PATTERNS), ("LMW-固定", _files(True)[0], PATTERNS),
+            ("規則式", OUT / "patterns_calib.json", P.PATTERNS)]
+    for src, f, spec in srcs:
+        if not f.exists():
+            continue
+        c = json.loads(f.read_text())
         for k in spec:
             if k not in c or spec[k][0] == 0:
                 continue
-            x = c[k]["horizons"][str(P.PRIMARY)][P.OOS] if str(P.PRIMARY) in c[k]["horizons"] \
-                else c[k]["horizons"][P.PRIMARY][P.OOS]
+            x = c[k]["horizons"][str(P.PRIMARY)][P.OOS]
             rows.append({"來源": src, "形態": c[k]["name"], "方向": P.SIDE[spec[k][0]], "平均超額%": x["mean_ex_pct"],
                          "勝率%": x["hit_pct"], "NW t": x["t"], "每期檔數": x["avg_n"], "期數": x["n_dates"],
                          "可靠度": c[k]["reliability"]})
@@ -288,31 +338,47 @@ def compare(cal: dict) -> pd.DataFrame:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--latest", action="store_true")
+    ap.add_argument("--fixed-h", help="對照版：auto（事前規則）或頻寬數字（交易日）")
     a = ap.parse_args()
+    fixed = a.fixed_h is not None
+    calib_f, latest_f = _files(fixed)
     w = tc.load()
+    h, table = None, None
+    if fixed:
+        if a.fixed_h != "auto":
+            h = float(a.fixed_h)
+        elif a.latest:                     # 最近一段資料太短，沿用全歷史選出的頻寬
+            h = json.loads(calib_f.read_text())["_meta"]["fixed_h"]
+        else:
+            h, table = pick_fixed_h(w)
+            print(f"事前選頻寬（每 {L_DAYS} 日極值個數中位數）：{table} → h = {h}")
     if a.latest:
         w = {k: v.iloc[-P.LATEST_ROWS:] for k, v in w.items()}
     uni = tc.universe(w)
-    hits, levels = detect(w)
+    hits, levels = detect(w, h=h)
     lt = P.latest(w, uni, hits, levels, PATTERNS)
-    lt.to_parquet(OUT / "patterns_lmw_latest.parquet", index=False)
+    lt.to_parquet(latest_f, index=False)
     if not a.latest:
         cal = P.calibrate(w, uni, hits, PATTERNS)
-        cal["_meta"]["method"] = "Lo, Mamaysky & Wang (2000) 核迴歸形態；方向照技術分析慣例（改編）"
+        cal["_meta"]["method"] = ("Lo, Mamaysky & Wang (2000) 核迴歸形態；方向照技術分析慣例（改編）；頻寬 = "
+                                  + ("CV × 0.3（原文）" if h is None else f"固定 {h} 日（對照版，事前規則）"))
+        cal["_meta"]["fixed_h"] = h
+        cal["_meta"]["fixed_h_table"] = table
+        cal["_meta"]["variants"] = "LMW 有 CV、固定頻寬兩版，連同 patterns.py 規則式一起比較，檢定次數要合計"
         cal["_meta"]["ks"] = ks_tests(w, uni, hits)
-        cal["_meta"]["bandwidth"] = diagnose(w)
-        (OUT / "patterns_lmw_calib.json").write_text(json.dumps(cal, ensure_ascii=False, indent=1))
-        n = {k: int(v.to_numpy().sum()) for k, v in hits.items()}
+        cal["_meta"]["bandwidth"] = diagnose(w, h)
+        calib_f.write_text(json.dumps(cal, ensure_ascii=False, indent=1))
         print("頻寬診斷：", json.dumps(cal["_meta"]["bandwidth"], ensure_ascii=False))
+        n = {k: int(v.to_numpy().sum()) for k, v in hits.items()}
         print("LMW 形態成立次數（全部股票、全部歷史）：", json.dumps({PATTERNS[k][2]: v for k, v in n.items()},
                                                           ensure_ascii=False))
-        print(f"\n樣本外（2019 起）H{P.PRIMARY} 產業中性超額：LMW vs 規則式")
-        print(compare(cal).to_string(index=False))
+        print(f"\n樣本外（2019 起）H{P.PRIMARY} 產業中性超額：LMW 兩版 vs 規則式")
+        print(compare().to_string(index=False))
         print("\nKS 檢定：形態成立隔日標準化報酬 vs 全部股票日（p 值未校正多重比較，樣本相依會偏樂觀）")
         rows = [{"形態": PATTERNS[k][2], **{f"{p} {m}": cal["_meta"]["ks"][p][k].get(m) for p in (P.IS, P.OOS)
                                           for m in ("n", "D", "p")}} for k in PATTERNS]
         print(pd.DataFrame(rows).to_string(index=False))
-    print(f"\npatterns_lmw_latest.parquet：{w['adj_close'].index[-1]:%Y-%m-%d}，{len(lt)} 筆（{lt['code'].nunique()} 檔）")
+    print(f"\n{latest_f.name}：{w['adj_close'].index[-1]:%Y-%m-%d}，{len(lt)} 筆（{lt['code'].nunique()} 檔）")
 
 
 if __name__ == "__main__":

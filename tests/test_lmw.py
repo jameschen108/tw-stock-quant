@@ -74,3 +74,16 @@ def test_detect_has_no_lookahead():
         for name in M.PATTERNS:
             pd.testing.assert_frame_equal(part[name], full[name].iloc[:cut + 1], check_freq=False, obj=name)
     assert sum(int(x.values.sum()) for x in full.values()) > 0
+
+
+def test_fixed_bandwidth_variant():
+    hits, _ = M.detect(wide({"1101": HS, "1102": 200 - HS}), h=1.0)
+    assert np.flatnonzero(hits["hs"]["1101"].values).tolist() == [43 + M.D_LAG]
+    assert np.flatnonzero(hits["ihs"]["1102"].values).tolist() == [43 + M.D_LAG]
+    rng = np.random.default_rng(2)
+    close = {f"{1101 + i}": 50 * np.exp(np.cumsum(rng.normal(0, 0.02, 400))) for i in range(5)}
+    w = wide(close)
+    ext = {h: M._n_extrema(M._sample_windows(w), h) for h in (0.5, 2.0, 4.0)}
+    assert ext[0.5] >= ext[2.0] >= ext[4.0]                 # 頻寬越大、極值越少
+    h, table = M.pick_fixed_h(w)
+    assert table[h] <= M.TARGET_EXT and all(v > M.TARGET_EXT for k, v in table.items() if k < h)

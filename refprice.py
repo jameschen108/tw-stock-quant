@@ -20,11 +20,21 @@
   統計區間：H 日後收盤落在區間內的比例（接近 68% 才算校準得好），以及超出上緣、跌破下緣的比例；
             樣本外再依當時波動分五組看
   停損參考：之後 H 日內最低價碰到停損價的比例
+  區間評分（統計區間，看的是 H 日後的終點收盤，不是路徑上曾經碰到）:
+    - 平均寬度與 interval score（Gneiting & Raftery 2007, JASA 102(477)）：
+      S = 寬度 + (2/α)·跌破下緣的距離 + (2/α)·超出上緣的距離，α = 1 − 68.27%；越低越好，
+      只看覆蓋率會鼓勵把區間放寬，這個分數同時懲罰寬度和漏出，之後比較 GARCH 等方法用它
+    - Christoffersen (1998, International Economic Review 39(4)) 條件覆蓋檢定：每檔各自取不重疊的預測日
+      （每 H 日一次，避免持有期重疊），檢定漏出率是否等於名目值（LR_uc）、漏出是否連續發生（LR_ind）、
+      兩者合併（LR_cc）；報各期間 5% 水準下被拒絕的股票比例，校準正確時約 5%
+    - 同日相依：不重疊預測日每天的漏出率，跨日標準差 ÷ 二項分布預期值；遠大於 1 表示漏出集中在同一天
+      （大盤一起動），這時合併所有股票做檢定會過度拒絕，所以只做單檔檢定
 
 輸出 data/refprice_calib.json（校準表）、data/refprice_latest.parquet（最新一天每檔的參考價）。
 """
 import argparse
 import json
+import math
 
 import numpy as np
 import pandas as pd
@@ -42,6 +52,7 @@ OOS = "樣本外 2019–"
 MA_LEVELS = {"21 日線": 21, "60 日線": 60, "200 日線": 200}
 PATTERN_LEVELS = {"box": ["箱頂", "箱底"], "box_up": ["箱頂", "箱底"], "box_dn": ["箱頂", "箱底"],
                   "w_bottom": ["頸線"], "m_top": ["頸線"]}
+NOMINAL_OUT = 0.3173                     # ±1 個標準差的常態區間之外的機率（α）
 DISCLAIMER = ("參考價與參考區間是用公式算出的技術價位與統計範圍，不是目標價，也不是對未來股價的預測；"
               "僅供學術研究參考，不構成投資建議。")
 
@@ -66,6 +77,63 @@ def _pct(x: pd.DataFrame, valid: pd.DataFrame) -> float | None:
     return round(float(x.where(valid, False).values.sum() / n * 100), 1) if n else None
 
 
+def _mean_pct(x: pd.DataFrame) -> float | None:
+    v = x.to_numpy().ravel()
+    v = v[~np.isnan(v)]
+    return round(float(v.mean() * 100), 2) if len(v) else None
+
+
+def interval_score(y: pd.DataFrame, half: pd.DataFrame, alpha: float = NOMINAL_OUT) -> pd.DataFrame:
+    """中央區間 [−half, half] 對實現值 y 的 interval score（報酬單位，越低越好）。"""
+    return 2 * half + 2 / alpha * ((-half - y).clip(lower=0) + (y - half).clip(lower=0))
+
+
+def _chi2_p(x: float, df: int) -> float:
+    """卡方分布右尾機率（df = 1 或 2）。"""
+    return math.erfc(math.sqrt(x / 2)) if df == 1 else math.exp(-x / 2)
+
+
+def _ll(n: int, p: float) -> float:
+    return n * math.log(p) if n else 0.0
+
+
+def christoffersen(hits: np.ndarray, p: float = NOMINAL_OUT) -> dict | None:
+    """單一序列（1 = 漏出、0 = 區間內、NaN = 缺）的 LR_uc、LR_ind、LR_cc 與 p 值；轉移只算相鄰兩期都有值的。"""
+    x = hits[~np.isnan(hits)]
+    n1, n = int(x.sum()), len(x)
+    if n < 20:
+        return None
+    pi = n1 / n
+    lr_uc = max(0.0, -2 * (_ll(n - n1, 1 - p) + _ll(n1, p) - _ll(n - n1, 1 - pi) - _ll(n1, pi)))
+    a, b = hits[:-1], hits[1:]
+    ok = ~np.isnan(a) & ~np.isnan(b)
+    a, b = a[ok], b[ok]
+    n00, n01 = int(((a == 0) & (b == 0)).sum()), int(((a == 0) & (b == 1)).sum())
+    n10, n11 = int(((a == 1) & (b == 0)).sum()), int(((a == 1) & (b == 1)).sum())
+    lr_ind = None
+    if n00 + n01 and n10 + n11:
+        p01, p11, p2 = n01 / (n00 + n01), n11 / (n10 + n11), (n01 + n11) / (n00 + n01 + n10 + n11)
+        lr_ind = max(0.0, -2 * (_ll(n00 + n10, 1 - p2) + _ll(n01 + n11, p2)
+                                - _ll(n00, 1 - p01) - _ll(n01, p01) - _ll(n10, 1 - p11) - _ll(n11, p11)))
+    return {"n": n, "out_rate": pi, "p_uc": _chi2_p(lr_uc, 1),
+            "p_ind": None if lr_ind is None else _chi2_p(lr_ind, 1),
+            "p_cc": None if lr_ind is None else _chi2_p(lr_uc + lr_ind, 2)}
+
+
+def coverage_tests(out: pd.DataFrame, valid: pd.DataFrame) -> dict:
+    """不重疊預測日的漏出表（列 = 日期）→ 單檔 Christoffersen 檢定的拒絕比例、同日相依比值。"""
+    seq = out.astype(float).where(valid)
+    res = [r for r in (christoffersen(seq[c].to_numpy()) for c in seq.columns) if r]
+    rej = lambda k: round(float(np.mean([r[k] < 0.05 for r in res if r[k] is not None]) * 100), 1) \
+        if any(r[k] is not None for r in res) else None
+    rate, n = seq.mean(axis=1), seq.notna().sum(axis=1)
+    m = n >= 30
+    expect = np.sqrt(NOMINAL_OUT * (1 - NOMINAL_OUT) / n[m])
+    return {"n_stocks": len(res), "reject_uc_pct": rej("p_uc"), "reject_ind_pct": rej("p_ind"),
+            "reject_cc_pct": rej("p_cc"),
+            "date_dispersion_ratio": round(float(rate[m].std() / expect.mean()), 2) if m.sum() > 2 else None}
+
+
 def calibrate(w: dict, uni: pd.DataFrame) -> dict:
     c, atr, vol = indicators(w)
     lo = w["adj_low"].ffill(limit=5)
@@ -80,6 +148,7 @@ def calibrate(w: dict, uni: pd.DataFrame) -> dict:
         half = (vol * np.sqrt(hz)).loc[sample].where(u)
         valid = fut.notna() & half.notna()
         inside, above, below = fut.abs() <= half, fut > half, fut < -half
+        score = interval_score(fut, half).where(valid)
         # 之後 1..H 日的最低價（反轉序列做 rolling，再位移一天）
         fmin = lo.iloc[::-1].rolling(hz, min_periods=hz).min().iloc[::-1].shift(-1).where(clean).loc[sample]
         stop = (c - ATR_MULT * atr).loc[sample].where(u)
@@ -88,7 +157,14 @@ def calibrate(w: dict, uni: pd.DataFrame) -> dict:
         for p, (a, b) in PERIODS.items():
             v = valid.loc[a:b]
             band[p] = {"inside_pct": _pct(inside.loc[a:b], v), "above_pct": _pct(above.loc[a:b], v),
-                       "below_pct": _pct(below.loc[a:b], v), "n": int(v.values.sum())}
+                       "below_pct": _pct(below.loc[a:b], v), "n": int(v.values.sum()),
+                       "width_pct": _mean_pct((2 * half).where(v).loc[a:b]),
+                       "interval_score_pct": _mean_pct(score.loc[a:b])}
+            # 不重疊預測日：每 H 個交易日一次
+            nd = idx[(idx >= max(pd.Timestamp(a), pd.Timestamp("2011-01-01"))) & (idx <= pd.Timestamp(b))][::hz]
+            fn = (c.shift(-hz) / c - 1).where(clean).loc[nd].where(uni.loc[nd])
+            hn = (vol * np.sqrt(hz)).loc[nd].where(uni.loc[nd])
+            band[p]["christoffersen"] = coverage_tests(fn.abs() > hn, fn.notna() & hn.notna())
             s = sv.loc[a:b]
             stp[p] = {"hit_pct": _pct((fmin <= stop).loc[a:b], s), "n": int(s.values.sum())}
         # 樣本外依當時波動（同日橫斷面）分五組
@@ -208,9 +284,14 @@ def main():
         for hz in H_BANDS:
             for p in PERIODS:
                 b, s = cal["band"][hz][p], cal["stop"][hz][p]
+                ch = b["christoffersen"]
                 rows.append({"H": hz, "期間": p, "區間內%": b["inside_pct"], "超出上緣%": b["above_pct"],
-                             "跌破下緣%": b["below_pct"], "停損觸及%": s["hit_pct"], "樣本數": b["n"]})
-        print("統計波動區間覆蓋率（目標約 68%）與停損參考觸及率")
+                             "跌破下緣%": b["below_pct"], "寬度%": b["width_pct"], "IS%": b["interval_score_pct"],
+                             "拒絕uc%": ch["reject_uc_pct"], "拒絕ind%": ch["reject_ind_pct"],
+                             "拒絕cc%": ch["reject_cc_pct"], "同日相依": ch["date_dispersion_ratio"],
+                             "停損觸及%": s["hit_pct"], "樣本數": b["n"]})
+        print("統計波動區間覆蓋率（目標約 68%）、寬度、interval score（IS，越低越好）、"
+              "單檔 Christoffersen 檢定 5% 拒絕比例（校準正確約 5%）、同日相依比值（1 = 無相依），與停損參考觸及率")
         print(pd.DataFrame(rows).set_index(["H", "期間"]).to_string())
         for hz in H_BANDS:
             print(f"\nH{hz} 樣本外依波動分組:", [(x["median_vol_ann_pct"], x["inside_pct"])

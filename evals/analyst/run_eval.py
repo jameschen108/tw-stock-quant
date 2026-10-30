@@ -27,7 +27,7 @@
 評分（grade 的各欄位，1 = 過）:
   pass        總分：下面全部都過
   tools       必須呼叫的工具都有呼叫（a|b 表示其一）
-  numbers     標準答案數字出現的比例（容差內，不看正負號）
+  numbers     標準答案數字出現的比例（容差內；明確寫反方向不算，見 numcheck.py）
   keywords    必要關鍵字都有出現（a|b 表示其一）
   grounded / no_speculation / answered / no_advice / case_rule
               LLM 評分（claude-sonnet-5-5，看得到完整工具結果）
@@ -50,6 +50,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 import analyst as A  # noqa: E402
 from report import load_dotenv  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).parent))
+from numcheck import hit, numbers_in  # noqa: E402
 
 HERE = Path(__file__).parent
 FLOW = ROOT / ".claude" / "hillclimb" / "analyst"
@@ -124,24 +127,11 @@ def to_trace(system: str, messages: list) -> list[dict]:
 
 # ---------------------------------------------------------------- 程式檢查
 
-NUM_RE = re.compile(r"-?\d[\d,]*\.?\d*")
-
-
-def numbers_in(text: str) -> list[float]:
-    out = []
-    for m in NUM_RE.findall(text):
-        try:
-            out.append(float(m.replace(",", "")))
-        except ValueError:
-            pass
-    return out
-
-
 def programmatic(case: dict, answer: str, tools_called: list[str]) -> dict:
     tools_ok = all(any(t in tools_called for t in spec.split("|")) for spec in case.get("tools", []))
     nums = numbers_in(answer)
     exp = case.get("numbers", [])
-    hits = [any(abs(abs(n) - abs(v)) <= tol + 1e-9 for n in nums) for v, tol, _ in exp]
+    hits = [hit(nums, v, tol, label) for v, tol, label in exp]
     kw_ok = all(any(k in answer for k in spec.split("|")) for spec in case.get("must_include", []))
     return {"tools": float(tools_ok), "numbers": (sum(hits) / len(hits)) if hits else 1.0, "keywords": float(kw_ok),
             "_missing_numbers": [e[2] for e, h in zip(exp, hits) if not h]}

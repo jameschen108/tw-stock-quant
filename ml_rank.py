@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["pandas>=2.2", "pyarrow>=15", "scikit-learn>=1.5"]
+# dependencies = ["pandas>=2.2", "pyarrow>=15", "scikit-learn>=1.5", "shap>=0.46"]
 # ///
 """自行訓練的選股模型（Elastic Net、梯度提升樹），和 composite.py 的固定權重綜合分數比較（學術研究用）。
 
@@ -13,6 +13,7 @@
   uv run ml_rank.py                       # 2015 起逐月預測，報 2015–2018 與樣本外 2019 起
   uv run ml_rank.py --top 30 --top-min-value 2e7
   uv run ml_rank.py --llm                 # 另做 LLM 同候選比較（讀 llm_replay.jsonl，不呼叫 API）
+  uv run ml_rank.py --shap [--llm]        # 另做樹模型的 SHAP 解釋（加 --llm 時候選也附解釋）
 
 設計（固定在看結果之前）:
   特徵    composite.py 四組 13 個因子（營收動能、品質、價值、趨勢），前處理同 composite.py：
@@ -31,6 +32,12 @@ LLM 同候選比較（--llm）:
   用該年度重訓的模型打分；每批從同一群候選挑和 LLM buy 一樣多檔：Elastic Net、樹模型、comp_equal 各取前 k 名。
   報酬同 llm_replay.py：資料時點隔一個交易日收盤進場，之後 20、60 個交易日，不扣成本、等權；
   另附每批隨機挑 k 檔 N_RANDOM 次的分布，與批內「分數對報酬」的等級相關。三批、約 100 檔候選，樣本很小。
+
+SHAP 解釋（--shap，Lundberg & Lee 2017, NeurIPS 30）:
+  對每年重訓的樹模型，用 TreeExplainer（tree_path_dependent：背景分布就是當年的訓練資料，不用之後的資料）
+  解釋該年度的預測：各特徵平均 |SHAP| 佔比（逐年）、特徵值和它的 SHAP 的相關（方向）、相鄰年度重要度排序的
+  等級相關（穩定性），以及 from_high 和 ma200_gap 這對高度相關特徵的解釋是否互相抵銷。最新一期每檔的 SHAP 存檔。
+  SHAP 解釋的是模型的預測，不是報酬的因果，也不能拿來說明 LLM 怎麼決策。
 
 注意：2019 年後的資料在開發綜合分數時已被反覆看過（因子與趨勢組是看全期結果挑的），所以樣本外對
 綜合分數本身也不是乾淨的保留集；這裡兩種模型只各跑一個預先設定的網格，不再依結果調整。
@@ -105,7 +112,9 @@ def tuned(make: Callable[[dict], object], grid: list[dict], meta: list) -> Fit:
         if hasattr(m, "coef_"):
             info["coef"] = dict(zip(X.columns, np.round(m.coef_, 5).tolist()))
         meta.append(info)
-        return lambda Xp: m.predict(Xp.to_numpy())
+        predict = lambda Xp: m.predict(Xp.to_numpy())          # noqa: E731
+        predict.model = m                                         # SHAP 要用原始模型
+        return predict
     return fit
 
 
@@ -208,7 +217,7 @@ def snapshot(dates: list[pd.Timestamp]) -> pd.DataFrame:
     return universe(df, 5, 5e6, 120).reset_index(drop=True)
 
 
-def llm_compare(models: dict[str, dict], scores_out: Path) -> None:
+def llm_compare(models: dict[str, dict], scores_out: Path, explain: bool = False) -> None:
     from custom import load_rets
     fin = llm_finals()
     batches = sorted(pd.Timestamp(b) for b in fin["batch"].unique())
@@ -233,6 +242,13 @@ def llm_compare(models: dict[str, dict], scores_out: Path) -> None:
                      **{f"r{h}": wr[h].reindex(g["code"]).to_numpy() for h in HORIZONS})
         rows.append(e)
     ev = pd.concat(rows, ignore_index=True)
+    if explain:                                       # 候選附樹模型的 SHAP 前三大貢獻
+        tops = {}
+        for b in batches:
+            rows_b = ok & (snap["date"] == b)
+            sv = shap_values(models["ml_gbt"][b.year], Xs[rows_b])
+            tops |= {(b, c): top_contrib(sv.loc[i]) for i, c in zip(sv.index, snap.loc[rows_b, "code"])}
+        ev["gbt_shap_top"] = [tops.get((pd.Timestamp(b), c)) for b, c in zip(ev["batch"], ev["code"])]
     ev.to_csv(scores_out, index=False)
     print(f"\nLLM 同候選比較（{', '.join(ev['model'].unique())}，回放 {len(batches)} 批，"
           f"候選 {len(ev)} 檔，有模型分數 {int(ev['ml_en'].notna().sum())} 檔）")
@@ -248,6 +264,68 @@ def llm_compare(models: dict[str, dict], scores_out: Path) -> None:
     print(f"\n明細：{scores_out}")
 
 
+# ---------------------------------------------------------------- SHAP
+
+def shap_values(predict, X: pd.DataFrame) -> pd.DataFrame:
+    """樹模型對 X 每列的 SHAP（欄 = 特徵，另加 base）。背景分布用訓練時樹節點的樣本數（tree_path_dependent）。"""
+    import shap
+    e = shap.TreeExplainer(predict.model, feature_perturbation="tree_path_dependent")
+    sv = pd.DataFrame(e.shap_values(X.to_numpy()), index=X.index, columns=X.columns)
+    return sv.assign(base=float(np.ravel(e.expected_value)[0]))
+
+
+def importance(sv: dict[int, pd.DataFrame]) -> pd.DataFrame:
+    """{年: SHAP 表} → 年 × 特徵 的平均 |SHAP| 佔比（%）。"""
+    imp = pd.DataFrame({y: v.drop(columns="base").abs().mean() for y, v in sv.items()}).T
+    return imp.div(imp.sum(axis=1), axis=0) * 100
+
+
+def direction(sv: pd.DataFrame, X: pd.DataFrame) -> pd.Series:
+    """特徵值和它的 SHAP 的相關：正 = 值越大越推高預測。"""
+    return pd.Series({f: X[f].corr(sv[f]) for f in X.columns})
+
+
+def stability(imp: pd.DataFrame) -> float:
+    """相鄰年度重要度排序的等級相關平均。"""
+    r = imp.rank(axis=1)
+    return float(np.mean([r.iloc[i].corr(r.iloc[i + 1]) for i in range(len(r) - 1)])) if len(r) > 1 else np.nan
+
+
+def top_contrib(row: pd.Series, k: int = 3) -> str:
+    v = row.drop("base")
+    return "、".join(f"{f} {x:+.4f}" for f, x in v.reindex(v.abs().sort_values(ascending=False).index[:k]).items())
+
+
+def explain(models: dict, X: pd.DataFrame, out: Path, n_per_year: int = 3000) -> None:
+    lvl = X.index.get_level_values(0)
+    ok = X.notna().all(axis=1)
+    sv, xs = {}, {}
+    for year, predict in sorted(models.items()):
+        rows = X[ok & (lvl.year == year)]
+        if len(rows) > n_per_year:
+            rows = rows.sample(n_per_year, random_state=0)
+        sv[year], xs[year] = shap_values(predict, rows), rows
+    imp = importance(sv)
+    print(f"\n樹模型 SHAP：各年度預測的平均 |SHAP| 佔比（%，每年抽 {n_per_year} 列）")
+    print(imp.round(1).to_string())
+    last = max(sv)
+    d = direction(sv[last], xs[last])
+    print(f"\n{last} 年方向（特徵值和 SHAP 的相關，正 = 值越大越推高預測）:")
+    print("  " + "、".join(f"{f} {v:+.2f}" for f, v in d.sort_values().items()))
+    print(f"相鄰年度重要度排序的等級相關平均：{stability(imp):+.2f}（1 = 每年排序都一樣）")
+    a, b = "from_high", "ma200_gap"
+    allx, alls = pd.concat(xs.values()), pd.concat(sv.values())
+    print(f"相關特徵：{a} 和 {b} 的特徵相關 {allx[a].corr(allx[b]):+.2f}，SHAP 相關 {alls[a].corr(alls[b]):+.2f}；"
+          f"兩者 SHAP 相加後平均 |SHAP| {(alls[a] + alls[b]).abs().mean():.4f}，"
+          f"分開相加 {alls[a].abs().mean() + alls[b].abs().mean():.4f}（前者小很多表示互相抵銷）")
+    latest = lvl.max()
+    rows = X[ok & (lvl == latest)]
+    s = shap_values(models[latest.year], rows)
+    s.assign(pred=s.drop(columns="base").sum(axis=1) + s["base"]).reset_index().to_parquet(out, index=False)
+    imp.to_csv(out.with_name("ml_shap_importance.csv"))
+    print(f"最新一期（{latest:%Y-%m-%d}）{len(s)} 檔的 SHAP：{out}")
+
+
 # ---------------------------------------------------------------- 主程式
 
 def main():
@@ -256,6 +334,7 @@ def main():
     ap.add_argument("--top", type=int, default=30)
     ap.add_argument("--top-min-value", type=float, default=2e7)
     ap.add_argument("--llm", action="store_true", help="另做 LLM 同候選比較")
+    ap.add_argument("--shap", action="store_true", help="另做樹模型的 SHAP 解釋")
     a = ap.parse_args()
 
     C.GROUPS["trend"] = C.TREND
@@ -316,8 +395,10 @@ def main():
     pd.DataFrame({k: t["net"] for k, t in tops.items()} | {"mkt": tops["comp_equal"]["mkt"]}) \
         .to_parquet(out / "ml_top_returns.parquet")
     (out / "ml_meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    if a.shap:
+        explain(models["ml_gbt"], X, out / "ml_shap_latest.parquet")
     if a.llm:
-        llm_compare(models, out / "ml_vs_llm.csv")
+        llm_compare(models, out / "ml_vs_llm.csv", explain=a.shap)
 
 
 if __name__ == "__main__":

@@ -104,3 +104,17 @@ def test_window_returns_enter_after_signal():
     assert wr[20]["1101"] == pytest.approx(1.01 ** 20 - 1)              # 第 4 天收盤進場，持有 20 天
     assert wr[60]["1101"] == pytest.approx(1.01 ** 60 - 1)
     assert np.isnan(M.window_returns(rets, ["1101"], days[30])[60]["1101"])
+
+
+def test_shap_summaries():
+    idx = pd.RangeIndex(4)
+    sv = {2024: pd.DataFrame({"a": [0.3, -0.3, 0.1, -0.1], "b": [0.1, -0.1, 0.0, 0.0], "base": 0.0}, index=idx),
+          2025: pd.DataFrame({"a": [0.1, -0.1, 0.0, 0.0], "b": [0.3, -0.3, 0.1, -0.1], "base": 0.0}, index=idx)}
+    imp = M.importance(sv)
+    assert imp.loc[2024, "a"] == pytest.approx(80) and imp.loc[2025, "b"] == pytest.approx(80)
+    assert imp.sum(axis=1).tolist() == pytest.approx([100, 100])
+    assert M.stability(imp) == pytest.approx(-1)                     # 兩年排序完全相反
+    X = pd.DataFrame({"a": [2.0, -2.0, 1.0, -1.0], "b": [-1.0, 1.0, 0.0, 0.5]}, index=idx)
+    d = M.direction(sv[2024], X)
+    assert d["a"] > 0.9 and d["b"] < 0
+    assert M.top_contrib(sv[2024].loc[0], k=1) == "a +0.3000"

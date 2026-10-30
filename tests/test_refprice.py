@@ -43,4 +43,29 @@ def test_band_coverage_near_68_pct_for_normal_returns():
         b = cal["band"][hz][R.OOS]
         assert 64 < b["inside_pct"] < 72
         assert b["inside_pct"] + b["above_pct"] + b["below_pct"] == pytest.approx(100, abs=0.2)
+    ch = cal["band"][20][R.OOS]["christoffersen"]                            # H60 樣本外每檔只有 13 期，不夠檢定
+    assert ch["n_stocks"] == 40 and ch["reject_uc_pct"] <= 25          # 獨立常態報酬：拒絕比例接近 5%
+    assert 0.5 < ch["date_dispersion_ratio"] < 1.6                      # 各檔獨立：沒有同日相依
     assert 0 < cal["stop"][20][R.OOS]["hit_pct"] < 100
+
+
+def test_interval_score():
+    y = pd.DataFrame({"a": [0.0, 0.15, -0.30]})
+    half = pd.DataFrame({"a": [0.10, 0.10, 0.10]})
+    s = R.interval_score(y, half, alpha=0.5)["a"].tolist()
+    assert s == pytest.approx([0.2, 0.2 + 4 * 0.05, 0.2 + 4 * 0.20])
+
+
+def test_christoffersen():
+    rng = np.random.default_rng(3)
+    iid = (rng.random(400) < R.NOMINAL_OUT).astype(float)
+    r = R.christoffersen(iid)
+    assert r["p_uc"] > 0.01 and r["p_ind"] > 0.01
+    assert R.christoffersen((rng.random(400) < 0.6).astype(float))["p_uc"] < 1e-6       # 漏出率太高
+    clustered = np.repeat((rng.random(80) < R.NOMINAL_OUT).astype(float), 5)            # 漏出連續發生
+    r = R.christoffersen(clustered)
+    assert r["p_ind"] < 1e-6 and r["p_cc"] < 1e-6
+    gaps = iid.copy()
+    gaps[::7] = np.nan
+    assert R.christoffersen(gaps)["n"] == int((~np.isnan(gaps)).sum())
+    assert R.christoffersen(iid[:10]) is None

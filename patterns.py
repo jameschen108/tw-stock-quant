@@ -160,26 +160,26 @@ def detect(w: dict, keep_levels: int = EVENT_DAYS) -> tuple[dict, dict]:
     return hits, levels
 
 
-def active(name: str, hit: pd.DataFrame) -> pd.DataFrame:
-    """成立中：事件型 = 最近 EVENT_DAYS 天內成立過；狀態型 = 當天成立。"""
-    if PATTERNS[name][1] == "state":
+def active(name: str, hit: pd.DataFrame, spec: dict = PATTERNS) -> pd.DataFrame:
+    """成立中：事件型 = 最近 EVENT_DAYS 天內成立過；狀態型 = 當天成立。spec 是形態定義表（lmw.py 傳自己的）。"""
+    if spec[name][1] == "state":
         return hit
     return hit.astype("int8").rolling(EVENT_DAYS, min_periods=1).max().astype(bool)
 
 
 # ---------------------------------------------------------------- 校準
 
-def calibrate(w: dict, uni: pd.DataFrame, hits: dict) -> dict:
+def calibrate(w: dict, uni: pd.DataFrame, hits: dict, spec: dict = PATTERNS) -> dict:
     idx = w["adj_close"].index
     sample = idx[idx >= "2011-01-01"][::tc.STEP]
     ind = tc.industries(w["adj_close"].columns)
     u = uni.loc[sample]
-    act = {k: active(k, x).loc[sample] & u for k, x in hits.items()}
-    out = {k: {"name": PATTERNS[k][2], "side": PATTERNS[k][0], "horizons": {}} for k in PATTERNS}
+    act = {k: active(k, x, spec).loc[sample] & u for k, x in hits.items()}
+    out = {k: {"name": spec[k][2], "side": spec[k][0], "horizons": {}} for k in spec}
     for hz in HORIZONS:
         ex = tc.industry_excess(tc.forward(w, hz).loc[sample].where(u), ind)
         lag = max(1, hz // tc.STEP)
-        for k in PATTERNS:
+        for k in spec:
             g = ex.where(act[k])
             n = g.notna().sum(axis=1)
             m = g.mean(axis=1).where(n >= MIN_N)
@@ -195,7 +195,7 @@ def calibrate(w: dict, uni: pd.DataFrame, hits: dict) -> dict:
             out[k]["horizons"][hz] = res
     for k, r in out.items():
         r["reliability"] = reliability(r["side"], r["horizons"][PRIMARY])
-    out["_meta"] = {"primary_horizon": PRIMARY, "n_tests": len(PATTERNS) * len(HORIZONS),
+    out["_meta"] = {"primary_horizon": PRIMARY, "n_tests": len(spec) * len(HORIZONS),
                     "note": "平均超額 = 成立中股票之後 H 日的產業中性超額（%）；勝率 = 跑贏同產業的比例。"
                             "個股報酬右偏，各組勝率常低於 50%，要和其他形態比較。"}
     return out
@@ -214,13 +214,13 @@ def reliability(side: int, res: dict) -> str | None:
 
 # ---------------------------------------------------------------- 最新形態
 
-def latest(w: dict, uni: pd.DataFrame, hits: dict, levels: dict) -> pd.DataFrame:
+def latest(w: dict, uni: pd.DataFrame, hits: dict, levels: dict, spec: dict = PATTERNS) -> pd.DataFrame:
     idx = w["adj_close"].index
     last, tail = idx[-1], idx[-EVENT_DAYS:]
     traded = w["close"].loc[last].notna()
     base = (w["adj_close"] / w["close"]).loc[last]            # 還原價 → 最新一天的價格基準
     rows = []
-    for k, (side, kind, name, _) in PATTERNS.items():
+    for k, (side, kind, name, _) in spec.items():
         hk = hits[k].loc[tail if kind == "event" else [last]]
         hk = hk.loc[:, hk.any() & traded.reindex(hk.columns, fill_value=False)]
         for code in hk.columns:

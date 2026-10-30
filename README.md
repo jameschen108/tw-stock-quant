@@ -139,6 +139,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `moat.py`、`stars.py`、`outlook.py` | 護城河分級、星等、看漲看跌標籤 |
 | `technicals.py`、`regime.py` | 技術面訊號與大盤多空、市場狀態指標 |
 | `patterns.py`、`refprice.py`、`matrix.py` | 價格形態、參考價（支撐壓力、停損、統計區間）、四維訊號矩陣，各附歷史校準；只進報告與個股頁 |
+| `lmw.py` | Lo, Mamaysky & Wang (2000) 核迴歸形態辨識（頭肩、擴張、三角、矩形、雙重頂底），和 `patterns.py` 用同一套校準比較，另附 KS 分布檢定；`--fixed-h auto` 跑事前固定頻寬的對照版；研究用，還沒進報告與個股頁 |
 | `strategy.py`、`robust.py`、`strategies/*.toml` | 策略回測與穩健性檢查，策略以 TOML 設定 |
 | `paper.py` | 模擬持股，每月記錄前 N 名並追蹤報酬 |
 | `mine.py` | 自選股即時模擬：自己挑股票或從觀察名單、模型選股、策略、財報驚喜名單帶入，從最新資料日起往後記錄並追蹤（可月調、可每月照規則重選；財報驚喜是新公布的買進、持有期滿賣出）；可選加權方式與停損、停利、大盤濾網等風險規則；建立前可用同一套規則回測過去（`mine.py bt`） |

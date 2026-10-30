@@ -37,3 +37,21 @@ def test_levels_and_dates_not_signed():
     assert ok("股價跌破 100 元", 100, 0.5)
     assert ok("資料日期 2026-10-27，收盤 27", 27, 0.5)   # 日期的「-」不是負號
     assert ok("營收年減 3%，達 50.2 億", 50.2)             # 逗號後是新的一句
+
+
+def test_gold_label_sets_direction():
+    def ok_l(text, expected, label, tol=1):
+        return N.hit(N.numbers_in(text), expected, tol, label)
+    lab = "融資 20 日減少（張）"                              # 數值存正的減少量
+    assert ok_l("融資近 20 日減少 47,980 張", 47980, lab)
+    assert ok_l("margin_chg_20d 為 -47,980 張", 47980, lab)
+    assert not ok_l("融資近 20 日增加 47,980 張", 47980, lab)
+    assert ok_l("外資賣超 70,272 張", -70272, "外資 20 日買賣超（張）")
+    assert ok_l("營收年增率 54.65%", 54.65, "年增率%", 0.1)
+    assert ok_l("營收年減 5.2%", -5.2, "年增率%", 0.1)
+
+
+def test_level_phrases_not_signed():
+    assert ok("毛利率下降至 30.5%", 30.5)
+    assert ok("融資餘額減少至 12,000 張", 12000, 1)
+    assert ok("股價下滑到 88.5 元", 88.5)

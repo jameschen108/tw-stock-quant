@@ -131,7 +131,7 @@ def programmatic(case: dict, answer: str, tools_called: list[str]) -> dict:
     tools_ok = all(any(t in tools_called for t in spec.split("|")) for spec in case.get("tools", []))
     nums = numbers_in(answer)
     exp = case.get("numbers", [])
-    hits = [hit(nums, v, tol) for v, tol, _ in exp]
+    hits = [hit(nums, v, tol, label) for v, tol, label in exp]
     kw_ok = all(any(k in answer for k in spec.split("|")) for spec in case.get("must_include", []))
     return {"tools": float(tools_ok), "numbers": (sum(hits) / len(hits)) if hits else 1.0, "keywords": float(kw_ok),
             "_missing_numbers": [e[2] for e, h in zip(exp, hits) if not h]}

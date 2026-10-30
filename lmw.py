@@ -19,7 +19,8 @@ Statistical Inference, and Empirical Implementation. Journal of Finance, 55(4), 
   - 平滑曲線斜率由正轉負為局部高點、由負轉正為局部低點；極值價用原始收盤價在該日 ±1 日內的最高（最低）
   - 形態用最後 5 個交替極值 E1…E5 定義，E5 必須落在視窗第 l 天（T − d），也就是只在形態剛完成、
     多看 d 天確認後記一次，同一個形態不會在相鄰視窗重複記
-  - 10 種形態（下表），門檻照原文：頭肩 1.5%、矩形 0.75%、雙重頂底 1.5% 且兩個高（低）點相隔 > 22 日
+  - 10 種形態（下表），門檻照原文 Definition 1–5：「within x percent of their average」= 每個點都在這組點平均的
+    x% 內（兩點時最多相差約 2x%），頭肩 1.5%、矩形 0.75%、雙重頂底 1.5%，雙重頂底另要求兩點相隔 > 22 日
   - 雙重頂底（改編）：原文的 Ea 取視窗內 E1 之後最高（最低）的極值；這裡限定在同一組 E1…E5 內
   - 方向（改編）：原文只檢定形態後報酬分布是否不同，不指定漲跌；這裡照技術分析慣例，頂部形態記看跌、
     底部形態記看漲，再用 patterns.py 的產業中性超額與 Newey-West t 校準
@@ -150,7 +151,7 @@ def classify(e: np.ndarray, t: np.ndarray, first: np.ndarray) -> dict[str, np.nd
     rect = _within(odd, RECT_TOL) & _within(even, RECT_TOL)
     out["rtop"] = mx & rect & (np.min(odd, 0) > np.max(even, 0))
     out["rbot"] = mn & rect & (np.max(odd, 0) < np.min(even, 0))
-    # 雙重頂（底）：E1 之後同類極值（E3、E5）中最高（最低）的一個，和 E1 相差 1.5% 內、相隔 > 22 日
+    # 雙重頂（底）：E1 之後同類極值（E3、E5）中最高（最低）的一個，兩者都在兩者平均的 1.5% 內、相隔 > 22 日
     a = np.where(e5 * first > e3 * first, 4, 2)
     ea, ta = e[np.arange(len(e)), a], t[np.arange(len(t)), a]
     dbl = _within([e1, ea], DBL_TOL) & (ta - t[:, 0] > DBL_GAP)

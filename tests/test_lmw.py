@@ -87,3 +87,10 @@ def test_fixed_bandwidth_variant():
     assert ext[0.5] >= ext[2.0] >= ext[4.0]                 # 頻寬越大、極值越少
     h, table = M.pick_fixed_h(w)
     assert table[h] <= M.TARGET_EXT and all(v > M.TARGET_EXT for k, v in table.items() if k < h)
+
+
+def test_tolerance_is_relative_to_average():
+    # 原文：E1、E5「within 1.5 percent of their average」→ 每個點離平均 ≤ 1.5%，兩點最多相差約 3%
+    t = np.array([[0, 7, 14, 21, 28]] * 2)
+    e = np.array([[100, 95, 110, 95, 102.9], [100, 95, 110, 95, 103.1]])
+    assert M.classify(e, t, np.array([1, 1]))["hs"].tolist() == [True, False]

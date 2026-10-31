@@ -235,7 +235,7 @@ def strategy_summaries(panel, rets) -> tuple[list[dict], pd.DataFrame]:
         mine = led[(led["strategy"] == cur["id"]) & (led["hash"] == h)]
         if mine.empty:
             continue
-        cfg = confs[h]
+        cfg = S.with_defaults(confs[h])                  # 舊紀錄沒有後來才加的設定（例如停利），補預設值
         res = S.simulate(cfg, panel, rets, fixed_from(mine))
         s_last = mine["signal_date"].max()
         lastp = mine[(mine["signal_date"] == s_last) & mine["in_pick"]].sort_values("pick_order")

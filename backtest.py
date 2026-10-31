@@ -12,7 +12,7 @@
 輸入 data/factors_monthly.parquet（factors.py）。輸出 data/bt/ 下的 IC 序列與分位報酬。
 
 股票池（每個換股日）: 普通股、當天有成交、上市滿 120 個交易日、收盤 >= min_price、
-20 日均成交值 >= min_value。
+20 日均成交值 >= min_value；處置股、注意股（換股日當天公布）、全額交割股不列入（restricted.py）。
 報酬: 等權；成本以 Q5 換手率計，買 0.1425% + 賣 0.1425% + 證交稅 0.3%。
 """
 import argparse
@@ -20,6 +20,7 @@ import argparse
 import numpy as np
 import pandas as pd
 
+import restricted
 from build_panel import OUT
 from factors import FACTORS
 
@@ -28,9 +29,18 @@ N_Q = 5
 MIN_NAMES = 100
 
 
-def universe(df: pd.DataFrame, min_price: float, min_value: float, min_obs: int) -> pd.DataFrame:
+def universe(df: pd.DataFrame, min_price: float, min_value: float, min_obs: int,
+             keep_restricted: bool = False) -> pd.DataFrame:
+    """keep_restricted=True 時處置等股票留在表內、加上 restricted 欄（算分數要全部股票，投組再排除）。"""
     keep = (df["close"] >= min_price) & (df["avg_value"] >= min_value) & (df["n_obs"] >= min_obs)
-    return df[keep].copy()
+    df = df[keep].copy()
+    df["restricted"] = restricted.flags(df, trading_days())
+    return df if keep_restricted else df[~df["restricted"]].drop(columns="restricted")
+
+
+def trading_days() -> pd.DatetimeIndex:
+    px = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date"], filters=[("code", "==", "0050")])
+    return pd.DatetimeIndex(sorted(px["date"].unique()))
 
 
 def rank_pct(s: pd.Series, by) -> pd.Series:
@@ -63,6 +73,8 @@ def run_factor(df: pd.DataFrame, col: str, mode: str) -> dict:
 def evaluate(d: pd.DataFrame) -> dict:
     """d 需有 date, code, score, fwd_ret；回傳每期 IC、分位報酬、Q5 換手率、檔數。"""
     d = d.dropna(subset=["score", "fwd_ret"])
+    if "restricted" in d:
+        d = d[~d["restricted"].astype(bool)]
     d = d[d.groupby("date")["code"].transform("size") >= MIN_NAMES]     # 資料太少的期別不算
     d["ret_rank"] = rank_pct(d["fwd_ret"], d["date"])
 

@@ -31,7 +31,7 @@
 
 ## 專題加分（優先：前兩項）
 
-- [ ] 前向紀錄自動化：launchd 每天收盤後跑 `update.py` 與 `llm_trader run`，失敗發通知；前向樣本斷一天就補不回來
+- [ ] 前向紀錄自動化：launchd 每天收盤後跑 `update.py` 與 `llm_trader run`，失敗發通知；前向樣本斷一天就補不回來。程式已寫好（`autorun.py`：資料日沒前進不呼叫 LLM、單日估價超過 US$1 不跑、失敗發 macOS 通知），**排程還沒安裝**，要用時 `uv run autorun.py --install`。2026-10-23～10-30 沒有執行，這段的決策時點補不回來；10-31 補資料時，候選與 wait 都還在有效期內（wait 15 檔，估 US$0.023），但 LLM 還沒跑
 - [ ] 決策存證：每次決策後把 `llm_decisions.jsonl` 雜湊 commit 進 git 或用 OpenTimestamps，證明事後沒改
 - [ ] LLM 決策解釋（不花 API 錢）：用既有 buy／skip／wait 對事實表欄位跑邏輯迴歸或決策樹，看能不能被簡單規則重現；能的話把規則拿去回測 15 年；另比 `llm_inputs/` 裡 buy 與 skip 的理由用詞；和路線圖 R01、R02（自訓選股模型＋SHAP 當 LLM 對照組）合併做
 - [ ] LLM 決策事後檢討頁（不花 API 錢）：前端列出每筆 buy 的理由與 20／60 日後報酬，依理由類型分組看哪種說法比較準

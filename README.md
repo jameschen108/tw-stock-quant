@@ -151,6 +151,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `event_study.py` | 月營收與外資事件研究，輸出 `data/event_study.csv` |
 | `llm_replay.py` | LLM 決策的準前瞻回放：`run --dry-run` 估費用、`run` 回放 2026-07～09、`report` 選股檢定 |
 | `llm_trader.py` | LLM 決策模擬：`candidates` 列候選、`run --dry-run` 估費用、`run` 決策並更新三組持股、`status` 看績效 |
+| `autorun.py` | 每日自動執行：收盤後跑 `update.py`，資料日有前進才跑 `llm_trader.py run`（先估價，超過上限不跑），失敗發 macOS 通知；`--install` 用 launchd 排平日 18:30 |
 | `report.py`、`daily.py` | 個股報告、每日速覽，輸出到 `reports/` |
 | `analyst.py`、`evals/analyst/` | 分析師問答（命令列）與評測題組 |
 | `update.py` | 每日更新的總流程 |

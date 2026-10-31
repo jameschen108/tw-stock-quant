@@ -99,6 +99,14 @@ def load_config(path: Path) -> dict:
     return cfg
 
 
+def with_defaults(cfg: dict) -> dict:
+    """存檔的舊設定（例如 paper 的 strat_configs.json）補上後來才加的欄位，值用預設；已有的欄位不變。"""
+    out = dict(cfg)
+    for k, v in DEFAULTS.items():
+        out[k] = {**v, **cfg.get(k, {})} if isinstance(v, dict) else cfg.get(k, v)
+    return out
+
+
 def config_hash(cfg: dict) -> str:
     body = {k: v for k, v in cfg.items() if k not in ("name", "description", "id")}
     # 後來才加的設定維持預設值時不進雜湊，舊設定的雜湊和加之前一樣（不會被重複算成新的嘗試）

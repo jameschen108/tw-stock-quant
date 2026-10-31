@@ -211,3 +211,13 @@ def test_new_risk_keys_keep_old_hash():
     cfg["risk"] = old
     cfg["risk"].update(take_profit=0.0, max_hold_days=0)
     assert S.config_hash(cfg) == h                         # 預設值不進雜湊，舊設定的嘗試紀錄不會重算
+
+
+def test_with_defaults_fills_late_keys_without_changing_hash():
+    cfg = S.with_defaults({"start": "2015-01-01", "risk": {"stop_loss": 0.1}, "id": "x", "name": "x"})
+    assert cfg["risk"]["stop_loss"] == 0.1 and cfg["risk"]["take_profit"] == 0.0 and cfg["risk"]["max_hold_days"] == 0
+    assert cfg["start"] == "2015-01-01" and cfg["capital"] == S.DEFAULTS["capital"]
+    old = {k: (dict(v) if isinstance(v, dict) else v) for k, v in cfg.items()}
+    for k in ("take_profit", "max_hold_days"):
+        del old["risk"][k]
+    assert S.config_hash(S.with_defaults(old)) == S.config_hash(cfg)

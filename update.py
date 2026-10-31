@@ -11,7 +11,7 @@
 步驟:
   1. 日行情    fetch_prices.py（上市、上櫃平行），從最新資料日往前 5 天抓到今天
                （17:30 前只抓到昨天；最近 7 天被記成空資料的平日會刪掉紀錄重抓，CLOSED 列的臨時休市日除外）
-  2. 除權息    fetch_events.py（只重抓涵蓋今天的那一段）
+  2. 除權息    fetch_events.py（只重抓涵蓋今天的那一段）；處置／注意／全額交割 fetch_restricted.py（同上，另存當天名單）
   3. 營收財報  fetch_public.py（OpenAPI 快照）；fetch_cashflow.py（新季度的營業現金流，每次最多 200 家）；重大訊息 fetch_mops.py（近 14 天沒抓過的日子 + 最近 3 天）
   4. 重建      build_prices →（籌碼 fetch_chips：三大法人、融資融券、外資持股，再 --build）→ build_panel → factors → composite → outlook（短中長期標籤）
   5. 檢查      最新交易日、資料列數不減少、近 30 日可疑報酬、月營收覆蓋率、財報季覆蓋率（季底到期限後 30 天），
@@ -195,6 +195,7 @@ def main():
                             for m in ("twse", "tpex")}, cwd=ROOT)
         for src in ("twse", "tpex"):
             ok &= run(["uv", "run", "-q", "fetch_events.py", "--source", src], f"除權息 {src}")
+            ok &= run(["uv", "run", "-q", "fetch_restricted.py", "--source", src], f"處置／注意／全額交割 {src}")
         ok &= run(["uv", "run", "-q", "fetch_public.py"], "營收 / 財報 OpenAPI")
         ok &= run(["uv", "run", "-q", "fetch_cashflow.py"], "營業現金流（新季度，最多 200 家）")
         ok &= run(["uv", "run", "-q", "fetch_mops.py", "--days", "14"], "重大訊息")

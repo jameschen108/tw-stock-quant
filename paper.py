@@ -13,6 +13,7 @@
   - 換股：資料日進入新的月份後，第一次執行時記一期（所以換股日是「每月第一個有跑的交易日」，
     不是回測用的月底；手動執行的時點會影響結果）
   - 只記「當下」的訊號：最新資料日距今超過 7 天就不記，避免把過去的訊號補記成即時紀錄
+  - 處置股、注意股（訊號日當天公布）、全額交割股不新買進，上一期已在前 N 名的照常續抱；基準池不排除（2026-11 起）
   - 進場：訊號日隔一個交易日收盤（同回測的 lag 1），持有到下一期進場日，期間不再平衡
   - 成本：換手部分扣 買 0.1425% + 賣 0.1425% + 證交稅 0.3%（第一期換手 100%）
   - 停牌 / 下市：沒有行情的日子報酬算 0（價值凍結），不另外處理下市損失；可疑報酬同 strategy.clean_returns 設為 0
@@ -39,6 +40,7 @@ import pandas as pd
 
 from backtest import COST_ROUND_TRIP
 from build_panel import OUT
+import restricted
 import strategy as S
 from strategy import clean_returns
 
@@ -69,7 +71,11 @@ def maybe_record(ledger: pd.DataFrame, today: pd.Timestamp) -> tuple[pd.DataFram
     if (today - last).days > MAX_STALE_DAYS:
         return ledger, f"最新資料日 {last:%Y-%m-%d} 距今超過 {MAX_STALE_DAYS} 天，不記（先更新資料）"
     pool = sc[(sc["date"] == last) & (sc["avg_value"] >= MIN_VALUE)].copy()
-    pool["rank"] = pool["comp_equal"].rank(ascending=False, method="first")
+    # 處置／注意／全額交割股不新買進（上一期已持有的照常續抱），不參與排名；基準池照舊全部
+    days = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date"], filters=[("code", "==", ETF)])["date"]
+    held = set(ledger.loc[ledger["signal_date"] == ledger["signal_date"].max()].query("in_top")["code"]) if len(ledger) else set()
+    ok = ~restricted.flags(pool, pd.DatetimeIndex(sorted(days))) | pool["code"].isin(held)
+    pool["rank"] = pool["comp_equal"].where(ok).rank(ascending=False, method="first")
     pool["in_top"] = pool["rank"] <= TOP_N
     names = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date", "code", "name"])
     names = names[names["date"] == last].set_index("code")["name"]
@@ -164,9 +170,10 @@ def read_strategies() -> list[Path]:
             if l.split("#")[0].strip()]
 
 
-def signal_rows(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, s: pd.Timestamp) -> pd.DataFrame:
-    """訊號日 s 的目標權重（一列一檔，含基準池），和 strategy.simulate 的選股、倉位、曝險同一套。"""
-    pool, pick = S.select(panel[panel["date"] == s], cfg)
+def signal_rows(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, s: pd.Timestamp, held=()) -> pd.DataFrame:
+    """訊號日 s 的目標權重（一列一檔，含基準池），和 strategy.simulate 的選股、倉位、曝險同一套。
+    held：上一期的選股（處置等股票續抱判斷用）。"""
+    pool, pick = S.select(panel[panel["date"] == s], cfg, held=held)
     base = S.target_weights(pick, cfg["position"], cfg["select"]["sort"], cfg["select"]["ascending"])
     idx = S.regime_index(rets, cfg["risk"]) if cfg["risk"]["regime"] == "ma" else None
     mult, info = S.exposure(s, base, rets, cfg["risk"], idx)
@@ -203,7 +210,9 @@ def record_strategies(panel, rets, today: pd.Timestamp) -> list[str]:
         if (today - last).days > MAX_STALE_DAYS:
             msgs.append(f"{cfg['id']}：最新資料日 {last:%Y-%m-%d} 距今超過 {MAX_STALE_DAYS} 天，不記")
             continue
-        rows = signal_rows(cfg, panel, rets, last).assign(strategy=cfg["id"], hash=h,
+        prev = mine[mine["signal_date"] == mine["signal_date"].max()] if len(mine) else mine
+        held = prev.loc[prev["in_pick"], "code"].tolist() if len(prev) else []
+        rows = signal_rows(cfg, panel, rets, last, held).assign(strategy=cfg["id"], hash=h,
                                                           recorded_at=pd.Timestamp(datetime.now()))
         new.append(rows)
         confs[h] = cfg

@@ -81,7 +81,7 @@ def zscore(s: pd.Series, by) -> pd.Series:
 
 
 def group_scores(df: pd.DataFrame) -> pd.DataFrame:
-    out = df[["date", "code", "fwd_ret", "avg_value"]].copy()
+    out = df[["date", "code", "fwd_ret", "avg_value", "restricted"]].copy()
     for gname, members in GROUPS.items():
         z = pd.concat({f: sign * zscore(neutralize(df, f, "ind_size"), df["date"])
                        for f, sign in members.items()}, axis=1)
@@ -117,10 +117,19 @@ def combine(gs: pd.DataFrame, w: pd.DataFrame) -> pd.Series:
 
 
 def top_n(d: pd.DataFrame, n: int, min_value: float) -> pd.DataFrame:
-    """流動性較高的股票中取分數前 n 名等權；回傳每期毛報酬、換手率、扣成本淨報酬。"""
+    """流動性較高的股票中取分數前 n 名等權；回傳每期毛報酬、換手率、扣成本淨報酬。
+    處置／注意／全額交割股（restricted）不新買進，上一期已持有的照常續抱；基準不排除。"""
     pool = d[(d["avg_value"] >= min_value)].dropna(subset=["fwd_ret"])
     mkt = pool.groupby("date")["fwd_ret"].mean()                 # 基準：同池全部等權（不論有無分數）
-    picks = pool.dropna(subset=["score"]).sort_values("score", ascending=False).groupby("date").head(n)
+    ranked = pool.dropna(subset=["score"]).sort_values("score", ascending=False)
+    parts, prev = [], set()
+    for _, g in ranked.groupby("date", sort=True):
+        if "restricted" in g:
+            g = g[~g["restricted"].astype(bool) | g["code"].isin(prev)]
+        g = g.head(n)
+        prev = set(g["code"])
+        parts.append(g)
+    picks = pd.concat(parts)
     ret = picks.groupby("date")["fwd_ret"].mean()
     sets = picks.groupby("date")["code"].apply(set)
     turn = pd.Series([1.0] + [1 - len(a & b) / n for b, a in zip(sets[:-1], sets[1:])], index=sets.index)
@@ -181,7 +190,7 @@ def main():
     if a.trend != "none":
         tf, bull = trend_features(df["date"].unique())
         df = df.merge(tf, on=["date", "code"], how="left")
-    df = universe(df[df["date"] >= a.start], 5, 5e6, 120).reset_index(drop=True)
+    df = universe(df[df["date"] >= a.start], 5, 5e6, 120, keep_restricted=True).reset_index(drop=True)
     gs = group_scores(df)
     if a.trend == "bull":
         gs["trend"] = gs["trend"].where(gs["date"].map(bull).fillna(0).astype(bool))
@@ -227,7 +236,7 @@ def main():
     if a.trend != "always":
         sfx += f"_trend_{a.trend}"
     pd.DataFrame(navs).to_parquet(out / f"composite_top_returns{sfx}.parquet")
-    gs.assign(**{k: v for k, v in candidates.items() if k.startswith("comp_")}) \
+    gs.drop(columns="restricted").assign(**{k: v for k, v in candidates.items() if k.startswith("comp_")}) \
         .to_parquet(out / f"composite_scores{sfx}.parquet", index=False)
 
 

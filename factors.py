@@ -94,9 +94,10 @@ def rebalance_dates(dates: pd.DatetimeIndex) -> pd.DatetimeIndex:
     return pd.DatetimeIndex(s.groupby(dates.to_period("M")).max().values)
 
 
-def price_features(w: dict, lag: int = LAG) -> pd.DataFrame:
+def price_features(w: dict, lag: int = LAG, reb: pd.DatetimeIndex | None = None) -> pd.DataFrame:
+    """reb = None 用每月最後一個交易日；也可以傳任意交易日（研究用的快照，例如 LLM 批次的資料時點）。"""
     dates = w["close"].index
-    reb = rebalance_dates(dates)
+    reb = rebalance_dates(dates) if reb is None else pd.DatetimeIndex(reb)
     pos = dates.get_indexer(reb)
     logtr = np.log1p(w["ret"].fillna(0)).cumsum()            # 停牌、下市後持平
     bad = w["ret_suspect"].fillna(False).astype(int).cumsum()
@@ -114,7 +115,7 @@ def price_features(w: dict, lag: int = LAG) -> pd.DataFrame:
         "shares_ex": at(w["shares"], pos),                     # 只有上櫃有
 
         # 動能：t−1 月底對 t−12 月底；反轉：t−1 月底對 t
-        "mom_12_1": np.exp(at(logtr, np.r_[[0], pos[:-1]]).values - at(logtr, np.r_[[0] * 12, pos[:-12]]).values) - 1,
+        "mom_12_1": np.exp(at(logtr, np.r_[[0], pos[:-1]]).values - at(logtr, np.r_[[0] * 12, pos][:len(pos)]).values) - 1,
         "rev_1m": np.exp(at(logtr, pos).values - at(logtr, np.r_[[0], pos[:-1]]).values) - 1,
     }
     out["mom_12_1"] = pd.DataFrame(out["mom_12_1"], index=reb, columns=w["close"].columns)
@@ -178,9 +179,13 @@ def attach(base: pd.DataFrame, tbl: pd.DataFrame, kind: str, cols: list[str]) ->
     return base.merge(lk, on=["code", "date"], how="left")
 
 
-def build() -> pd.DataFrame:
-    print("prices ..."); w = load_prices(); df = price_features(w)
+def build(reb: pd.DatetimeIndex | None = None, same_day: bool = False) -> pd.DataFrame:
+    """reb 見 price_features。same_day=True 時連換股日當天公布的營收 / 財報也算已知（給盤後才做決策的快照用，
+    例如 LLM 批次在資料時點收盤後決策）；預設 False，同 factors_monthly.parquet。"""
+    print("prices ..."); w = load_prices(); df = price_features(w, reb=reb)
     df = df[df["close"].notna()]                               # 換股日當天有成交
+    shift = pd.Timedelta(days=1 if same_day else 0)
+    df["date"] += shift
     print("revenue ...")
     rev = pd.read_parquet(OUT / "tej_rev.parquet", columns=["code", "period", "avail_date", *REV_COLS])
     df = attach(df, rev, "rev", REV_COLS)
@@ -188,6 +193,7 @@ def build() -> pd.DataFrame:
     fin = fin_features()
     fin_cols = [c for c in fin.columns if c not in ("code", "period", "avail_date")]
     df = attach(df, fin, "fin", fin_cols)
+    df["date"] -= shift
 
     df["mcap"] = df["close"] * point_in_time_shares(df, w["close"])  # 千元
     df["size"] = np.log(df["mcap"])

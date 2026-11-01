@@ -68,7 +68,8 @@
 
 ## 舊功能改進
 
-- [ ] 處置股、注意股、全額交割股排除：目前只有 `llm_trader.py` 處理，量化策略、`paper.py`、回測股票池也要排除，否則回測報酬偏高
+- [x] 處置股、注意股、全額交割股排除：`strategy.py` 選股、`paper.py`、`backtest.universe`、composite Top-N 都不新買進（已持有的續抱，基準池不排除）。原本以為 `llm_trader.py` 已處理，其實只有 prompt 提到，程式沒排除。上櫃全額交割只有 2026-10-30 起的名單
+- [ ] `llm_trader.py` 候選、`technicals` 系列事件研究（`patterns.py`、`lmw.py`、`refprice.py`）的處置／注意股排除，要不要做另外決定（llm_trader 會影響進行中的前向實驗）
 - [ ] 時點測試：合成資料放一筆公布日晚於換股日的營收，確認 `factors.py` 沒用到；另補 `outlook.py`、`paper.py`、`llm_trader` 回應解析的測試
 - [ ] CI 的 ruff 加 F401、F841
 - [ ] 滑價敏感度：單筆超過日均成交值 X% 就加衝擊成本，放進 `robust.py`（小型股策略如 `mid_bull_invvol`）；和路線圖 R08（Amihud 流動性與交易容量）合併做，滑價係數標成情境假設

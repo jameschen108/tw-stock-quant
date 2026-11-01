@@ -38,6 +38,7 @@
   - 訊號日 = 每月最後一個交易日（加上最新資料日）；隔一個交易日收盤成交（同回測的 lag 1）
   - 股數取整（可買零股，1 股為單位），成交價 = 當天收盤；零股實際成交價可能較差，這裡沒有模擬
   - 手續費 = max(min_fee, 成交金額 × fee_rate × fee_discount)，每檔每次一筆；賣出另扣 tax
+  - 處置股、注意股（訊號日當天公布）、全額交割股不新買進，已持有的照常續抱（restricted.py）；基準池不排除
   - 成交日收盤漲停（2015-06 前 ±7%，之後 ±10%，以含息報酬近似）買不到、跌停賣不掉、沒有行情不交易，
     買不到的部位留現金到下次換股
   - 持有期間不再平衡，部位價值隨含息日報酬變動（股利視為再投入該股）；現金不計利息
@@ -61,6 +62,7 @@ from statistics import NormalDist
 import numpy as np
 import pandas as pd
 
+import restricted
 from build_panel import OUT
 from report import CSS, svg_lines
 
@@ -120,7 +122,8 @@ def config_hash(cfg: dict) -> str:
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     """panel：訊號日 × 股票的所有可用欄位；rets：日含息報酬（列 = 日期、欄 = 代號）。"""
     ol = pd.read_parquet(OUT / "outlook.parquet").drop(columns=["avg_value"])
-    sc = pd.read_parquet(OUT / "bt" / "composite_scores.parquet").drop(columns=["fwd_ret", "avg_value"])
+    sc = pd.read_parquet(OUT / "bt" / "composite_scores.parquet").drop(columns=["fwd_ret", "avg_value", "restricted"],
+                                                                      errors="ignore")
     fm = pd.read_parquet(OUT / "factors_monthly.parquet").drop(columns=["fwd_ret"])
     panel = sc.merge(ol, on=["date", "code"], how="left").merge(fm, on=["date", "code"], how="left")
     px = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date", "code", "ret", "ret_suspect"],
@@ -129,6 +132,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     vol = rets.rolling(60, min_periods=40).std()
     v = vol.reindex(panel["date"].unique()).stack().rename("vol_60d").reset_index()
     panel = panel.merge(v.rename(columns={"level_0": "date"}), on=["date", "code"], how="left")
+    panel["restricted"] = restricted.flags(panel, rets.index)
     return panel, rets
 
 
@@ -196,11 +200,15 @@ def target_weights(pick: pd.DataFrame, pos: dict, sort: str, asc: bool) -> pd.Se
     return (w * pos["exposure"]).set_axis(pick["code"].values)
 
 
-def select(day: pd.DataFrame, cfg: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
+def select(day: pd.DataFrame, cfg: dict, held=()) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """pool：股票池（同池等權基準）；pick：選股結果。處置／注意／全額交割股（restricted 欄）不新買進，
+    held（目前持有的代號）裡的照常可以續抱。"""
     pool = day
     for q in cfg["universe"]["filters"]:
         pool = pool.query(q)
     pick = pool
+    if "restricted" in pick:
+        pick = pick[~pick["restricted"].astype(bool) | pick["code"].isin(set(held))]
     for q in cfg["select"]["filters"]:
         pick = pick.query(q)
     s = cfg["select"]
@@ -386,7 +394,7 @@ def simulate(cfg: dict, panel: pd.DataFrame, rets: pd.DataFrame, fixed: dict | N
             f = fixed[s]
             tw, tw_full, rinfo, pool_codes, pick_codes = f["tw"], f["tw_full"], f["rinfo"], f["pool"], f["picks"]
         else:
-            pool, pick = select(panel[panel["date"] == s], cfg)
+            pool, pick = select(panel[panel["date"] == s], cfg, held=hold)
             base_tw = target_weights(pick, pos, cfg["select"]["sort"], cfg["select"]["ascending"])
             mult, rinfo = exposure(s, base_tw, rets, risk, idx)
             tw = base_tw * mult

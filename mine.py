@@ -40,6 +40,7 @@ from pathlib import Path
 
 import pandas as pd
 
+import restricted
 import strategy as S
 import surprise as SU
 from build_panel import OUT
@@ -121,7 +122,8 @@ def panel_on(sig: pd.Timestamp) -> pd.DataFrame:
     fm = _latest_on_or_before(OUT / "factors_monthly.parquet", None, sig).drop(columns=["date", "fwd_ret"])
     day = sc.merge(ol, on="code", how="left").merge(fm, on="code", how="left")
     r = load_rets(sig - pd.Timedelta(days=120)).loc[:sig]
-    return day.assign(vol_60d=day["code"].map(r.rolling(60, min_periods=40).std().iloc[-1]))
+    day = day.assign(vol_60d=day["code"].map(r.rolling(60, min_periods=40).std().iloc[-1]))
+    return day.assign(restricted=restricted.flags(day.assign(date=sig), r.index))
 
 
 def source_label(source: str | None) -> str:

@@ -41,6 +41,7 @@
 - 同時跑三組模擬持股，持有 60 個交易日、等權，和 0050 比較：LLM 篩選、量化全買（不經 LLM）、隨機對照（每批隨機挑和 LLM 一樣多檔）。只有 LLM 組穩定贏過另外兩組，才代表 LLM 有加分。成交在決策之後的第一個交易日，不回填。
 - `status` 另做選股檢定：LLM 買進的平均報酬，對照每批隨機挑同樣檔數重複 1,000 次的分布，看落在第幾百分位。
 - 決策寫進 `data/paper/llm_decisions.jsonl`，只追加不改，含模型、prompt 雜湊、token 數與費用；模型看到的輸入原文另存在 `data/paper/llm_inputs/`，之後可以重建當時的判斷依據。
+- 決策存證（`attest.py`）：`llm_trader.py run`、`llm_replay.py run` 結束時自動對 `llm_decisions.jsonl`、`llm_replay.jsonl` 算 sha256，附一筆到 `attest/ledger.jsonl`（每筆帶前一筆雜湊成鏈）。`python attest.py verify` 檢查紀錄只追加、沒被改寫，輸入原文與 `input_sha256` 對得上；有裝 `ots` 時會蓋 OpenTimestamps 章。`python attest.py push` 把 `attest/` 提交到獨立分支 `attest`（加 `--remote` 才推到 origin）。只存雜湊，不含 TEJ 資料；蓋章前的內容無法回溯證明。
 - 模型知識截止在 2026-06，更早的日期可能記得後來的股價，所以只能從現在往後累積證據；`try --asof` 只用來除錯。
 - `llm_replay.py` 準前瞻回放：拿知識截止之後的 2026-07～09 三批事件，用當時的事實表重跑同一套決策（wait 在第 10、20 個交易日重問），再比 LLM buy、全部候選、每批隨機挑同樣檔數 1,000 次的 20 日與 60 日報酬。紀錄寫在 `data/paper/llm_replay.jsonl`，和前向的決策分開。
 
@@ -151,6 +152,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | `event_study.py` | 月營收與外資事件研究，輸出 `data/event_study.csv` |
 | `llm_replay.py` | LLM 決策的準前瞻回放：`run --dry-run` 估費用、`run` 回放 2026-07～09、`report` 選股檢定 |
 | `llm_trader.py` | LLM 決策模擬：`candidates` 列候選、`run --dry-run` 估費用、`run` 決策並更新三組持股、`status` 看績效 |
+| `attest.py` | 決策存證：`stamp` 附一筆雜湊、`verify` 檢查紀錄沒被改寫、`push` 提交到 `attest` 分支 |
 | `autorun.py` | 每日自動執行：收盤後跑 `update.py`，資料日有前進才跑 `llm_trader.py run`（先估價，超過上限不跑），失敗發 macOS 通知；`--install` 用 launchd 排平日 18:30 |
 | `report.py`、`daily.py` | 個股報告、每日速覽，輸出到 `reports/` |
 | `analyst.py`、`evals/analyst/` | 分析師問答（命令列）與評測題組 |

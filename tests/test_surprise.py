@@ -121,6 +121,30 @@ def test_events_band_skips_small_rebalances(mine_market):
     assert tn["tax"].iloc[1] > 0                                         # 一般組合照目標權重賣
 
 
+def _punish(code, start, end):
+    return pd.DataFrame([{"code": code, "market": "TWSE", "kind": "disposal", "announce_date": pd.Timestamp(start),
+                          "start": pd.Timestamp(start), "end": pd.Timestamp(end)}])
+
+
+def test_drop_restricted_blocks_new_buys_only():
+    days = pd.bdate_range("2024-01-01", periods=10)
+    ev = _punish("2330", days[1], days[5])
+    assert mine.drop_restricted(["2330", "2317"], days[2], set(), days, ev) == ["2317"]         # 處置中不新買
+    assert mine.drop_restricted(["2330", "2317"], days[2], {"2330"}, days, ev) == ["2330", "2317"]   # 已持有續抱
+    assert mine.drop_restricted(["2330"], days[7], set(), days, ev) == ["2330"]                 # 處置結束可以買
+    assert mine.drop_restricted([], days[2], set(), days, ev) == []
+
+
+def test_event_backtest_skips_restricted(mine_market, monkeypatch):
+    mine_market()
+    d0, d1 = DAYS[3], DAYS[10]
+    monkeypatch.setattr(SU, "schedule", lambda kind, s, e=None: {d0: ["1101", "1102"], d1: ["1101", "1102"]})
+    monkeypatch.setattr(mine.restricted, "load", lambda: _punish("1101", d0, DAYS[6]))
+    res = mine.backtest(None, DAYS[1], weighting="equal", source="rev_surprise")
+    assert list(res["signals"][d0].index) == ["1102"]                    # 處置中不新買
+    assert set(res["signals"][d1].index) == {"1101", "1102"}             # 解除後照常買
+
+
 def test_backtest_monthly_and_base(mine_market):
     days = pd.bdate_range("2024-11-01", periods=len(DAYS))              # 跨三個月底
     px = pd.concat([g.assign(date=days) for _, g in make_prices().groupby("code")])

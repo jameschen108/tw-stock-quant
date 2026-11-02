@@ -343,11 +343,22 @@ def cmd_run(asof, model, short, dry, limit):
             total += d["cost_usd"]
             print(f"  {ev['code']} {ev['name']}: {d['decision']}（信心 {d['conviction']}）{d['summary']}")
         print(f"實際費用 US${total:.4f}")
+        stamp_decisions()
     if limit:
         print("試跑（--limit）：決策已記錄，下次不會重問；模擬持股等不加 --limit 跑完再更新")
         return
     for m in sync_portfolios(model, asof, short):
         print(m)
+
+
+def stamp_decisions() -> None:
+    """決策寫完後存證（雜湊鏈，見 attest.py）；失敗不影響決策本身，但要看得到。"""
+    try:
+        import attest
+        rec = attest.stamp()
+        print(f"存證第 {rec['seq']} 筆（{rec['hash'][:12]}）")
+    except (SystemExit, Exception) as e:
+        print(f"⚠ 存證失敗，請跑 python attest.py verify：{e}")
 
 
 def cmd_status(model, short):

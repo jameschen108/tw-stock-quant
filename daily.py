@@ -194,6 +194,11 @@ def season_rows(watch: list[str]) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
     cur["產業"] = industry_info(pd.Timestamp.today())["產業名稱"]
     cur["watch"] = cur.index.isin(watch)
     cur = cur.reset_index().sort_values(["avail_date", "mcap_億"], ascending=[False, False])
+    miss = cur.loc[cur["name"].isna(), "code"].tolist()          # 剛上市的公司財報表沒有名稱，用行情表補
+    if miss:
+        px = pd.read_parquet(OUT / "prices_daily.parquet", columns=["code", "name"], filters=[("code", "in", miss)])
+        cur["name"] = cur["name"].fillna(cur["code"].map(px.groupby("code")["name"].last()))
+    cur["name"] = cur["name"].fillna("—")
     ind = cur.groupby(cur["產業"].fillna("（未分類）")).agg(
         n=("code", "size"), rev_yoy_med=("rev_yoy", "median"), gm_chg_med=("gm_chg", "median"),
         rev_up=("rev_yoy", lambda s: (s > 0).mean() * 100)).sort_values("n", ascending=False)

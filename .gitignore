@@ -3,6 +3,8 @@ __pycache__/
 .DS_Store
 data/
 logs/
+# 存證清單只放在獨立分支 attest（見 attest.py），不進 main
+attest/
 .claude/
 
 # 個股報告含 TEJ 財報數字，不上傳

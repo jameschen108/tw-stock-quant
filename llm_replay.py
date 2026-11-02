@@ -136,6 +136,7 @@ def cmd_run(model: str, dry: bool, limit: int | None):
         print(f"預估：第一輪 {n} 次呼叫，加上 wait 重問約 {n * 1.15:.0f} 次；費用約 US${n * 1.15 * (8500 * pin + 1500 * pout) / 1e6:.2f}")
     else:
         print(f"這次實際費用 US${total:.4f}")
+        T.stamp_decisions()
 
 
 # ---------------------------------------------------------------- 評估

@@ -137,11 +137,20 @@ def source_label(source: str | None) -> str:
         return source
 
 
-def source_codes(source: str, sig: pd.Timestamp | None = None) -> list[str]:
-    """名單來源在訊號日 sig 的股票（依來源自己的排序）。"""
+def drop_restricted(codes: list[str], sig: pd.Timestamp, held, days: pd.DatetimeIndex, ev: pd.DataFrame | None = None) -> list[str]:
+    """事件名單的處置／注意／全額交割股不新買進，held（目前持有）裡的照常續抱，同 strategy.select。"""
+    if not codes:
+        return codes
+    bad = restricted.flags(pd.DataFrame({"date": sig, "code": codes}), days, ev=ev).values
+    return [c for c, b in zip(codes, bad) if not b or c in held]
+
+
+def source_codes(source: str, sig: pd.Timestamp | None = None, held=()) -> list[str]:
+    """名單來源在訊號日 sig 的股票（依來源自己的排序）。held：目前持有，事件名單判斷續抱用。"""
     sig = sig if sig is not None else data_date()
     if source in EVENT_SOURCES:
-        return SU.active_codes(EVENT_SOURCES[source], sig)
+        days = load_rets(sig - pd.Timedelta(days=30)).index
+        return drop_restricted(SU.active_codes(EVENT_SOURCES[source], sig), sig, held, days)
     if source == "watchlist":
         from daily import read_watchlist
         return read_watchlist()
@@ -290,7 +299,7 @@ def record_monthly() -> list[str]:
         w = sigs[last]
         try:
             if m.get("source"):                          # 照名單來源重選，再照加權方式算權重
-                w = pd.Series(1.0, index=source_codes(m["source"], sig))
+                w = pd.Series(1.0, index=source_codes(m["source"], sig, set(sigs[last].index)))
                 if events and set(w.index) == set(sigs[last].index):
                     continue
                 if w.empty and not events:
@@ -358,7 +367,10 @@ def backtest(w: pd.Series | None, start, end=None, monthly: bool = False, capita
         raise ValueError("起訖日之間的交易日太少")
     rebalance = "events" if source in EVENT_SOURCES else "monthly" if monthly else "none"
     if rebalance == "events":
-        picks = SU.schedule(EVENT_SOURCES[source], days[0], days[-1])
+        picks, held, ev = SU.schedule(EVENT_SOURCES[source], days[0], days[-1]), set(), restricted.load()
+        for d, codes in picks.items():
+            picks[d] = drop_restricted(codes, d, held, rets.index, ev)
+            held = set(picks[d])
     else:
         dates = [days[0]]
         if monthly:

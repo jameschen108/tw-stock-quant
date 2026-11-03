@@ -168,6 +168,10 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
   Bailey, D. H., & López de Prado, M. (2014). The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality. *Journal of Portfolio Management*, 40(5), 94–107.
 - **Newey-West 標準誤**：持有期重疊時的 t 值，用在 `technicals.py`（lag = H / 5）、`patterns.py`、`outlook.py`、`robust.py`（月報酬，lag 3）。
   Newey, W. K., & West, K. D. (1987). A Simple, Positive Semi-Definite, Heteroskedasticity and Autocorrelation Consistent Covariance Matrix. *Econometrica*, 55(3), 703–708.
+- **因子模型拆解**：`ff.py` 用台股資料自建 MKT、SMB、HML、RMW、CMA、MOM 代理因子（2×3 排序、市值加權；每月重組、全體普通股分位，與原文每年 6 月、NYSE 斷點不同），策略月超額報酬對 CAPM、FF3、Carhart、FF5 迴歸；rf 用央行公布的五大銀行一年期定存利率（`refdata/tw_rf_1y.csv`）。輸出 `reports/factor_model.html`。
+  Fama, E. F., & French, K. R. (1993). Common Risk Factors in the Returns on Stocks and Bonds. *Journal of Financial Economics*, 33(1), 3–56；Fama, E. F., & French, K. R. (2015). A Five-Factor Asset Pricing Model. *Journal of Financial Economics*, 116(1), 1–22；Carhart, M. M. (1997). On Persistence in Mutual Fund Performance. *Journal of Finance*, 52(1), 57–82。
+- **持股特徵曝險**：`ff.py` 把策略、LLM 回放、前向三組的持股換成市值、B/M、獲利、投資、動能的橫斷面百分位，看曝險隨時間變化；借用特徵基準的思路，沒有做原文的 125 組特徵配對基準。
+  Daniel, K., Grinblatt, M., Titman, S., & Wermers, R. (1997). Measuring Mutual Fund Performance with Characteristic-Based Benchmarks. *Journal of Finance*, 52(3), 1035–1058。
 
 研究動機（引用其發現，不是複現原文）：
 

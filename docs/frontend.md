@@ -108,17 +108,18 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 ### 頁 4 的「虛擬下單」區塊（`frontend/trade_view.py`）
 
-和自選組合的差別：自選組合輸入權重、隔一個交易日收盤成交，用來照規則追蹤；虛擬下單一筆一筆買賣（張或零股），按下去就用現價成交，有現金帳。
+和自選組合的差別：自選組合輸入權重、隔一個交易日收盤成交，用來照規則追蹤；虛擬下單一筆一筆買賣（整股或零股），照台股交易時段成交，有現金帳。交易時段（`trade.phase`）：盤中 09:00–13:30 即時成交價；盤後定價 14:00–14:30（整股）、盤後零股 13:40–14:30 當天收盤價；其他時間是預約單，下一個交易日開盤價撮合（`trade.settle`，打開頁面時執行）。
 
 | 功能 | 來源 |
 |---|---|
 | 開帳戶（自訂虛擬資金）、開新帳戶（舊帳戶保留，畫面顯示最後開的） | `trade.open_account(capital)`；開戶時記下 0050 價格當同期對照 |
-| 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、占資產、未實現損益）；盤中每 10 秒更新；點持股列帶入全部股數賣出 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.quote`（盤中 `common.live_quotes`，其他時候最後收盤價） |
+| 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、占資產、未實現損益）；盤中每 10 秒更新；點持股列帶入全部股數賣出 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.mark`（證交所報價不比資料舊就用報價，否則用最後收盤價） |
 | 帳戶總資產曲線對同期 0050（每日收盤，到最新資料日；0050 含息） | `trade.nav(rows)`、`trade.bench_factor(opened)` |
 | 配息入帳（除權息日、持有股數、每股、入帳金額）；現金與總報酬已含配息 | `trade.dividends(rows)`（讀 `price_events.parquet` 的 div 事件），傳給 `trade.state(rows, divs=...)` |
-| 下單：選股票、買賣、張或零股、數量；先顯示成交價與來源、金額、手續費、證交稅、下單後現金、最多可買股數，不能成交時顯示原因；收盤價太舊時提醒 | `trade.quote(code, side, live=...)`、`trade.check(st, code, side, shares, q)`、`trade.max_shares`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl` |
+| 下單：選股票、買賣、整股（張數）或零股（1–999 股）、數量；顯示現在的交易時段、成交價（預約單是參考價）與來源、金額、手續費、證交稅、下單後可用現金、最多可買股數，不能成交時顯示原因；價格太舊時提醒 | `trade.quote(code, side, live=..., kind=...)`、`trade.check(st, code, side, shares, q)`、`trade.max_shares`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl`（成交是 trade，預約是 order） |
+| 預約單（還沒成交，選一列可取消）、取消與未成交紀錄 | `state["orders"]`、`state["cancels"]`；`trade.cancel(order_id)` |
 | 成交紀錄 | 同上，`state["trades"]` |
-| 從個股頁進來 | 個股頁代號旁的「虛擬下單」按鈕，`common.goto_trade(code)` 帶入股票 |
+| 從個股頁進來 | 個股頁代號旁的「下單」按鈕，`common.goto_trade(code)` 帶入股票 |
 
 ## 頁：主題
 

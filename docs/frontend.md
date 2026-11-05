@@ -16,6 +16,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 - **只讀**：前端讀 `data/` 的 parquet 和 json，不改寫。例外有兩個：
   - 策略試跑會寫入 `data/strategy/trials.jsonl`（嘗試紀錄要誠實）。
   - 產生 LLM 報告會寫入 `reports/`。
+  - 虛擬下單會寫入 `data/paper/my_trades.jsonl`（只追加，見 `trade.py`）。
 - **免責文字**：每頁都要有「學術研究用。看漲 / 看跌是模型依歷史統計的分組，不保證未來報酬」。不要出現目標價、「建議買進」之類的字眼。
 - **金鑰**：LLM 功能讀 `.env` 的 `ANTHROPIC_API_KEY`，不能顯示在畫面上，也不能寫進 log。個股報告預設用 Haiku，分析師問答預設用 Sonnet，每次呼叫前在畫面上標出大約的花費。
 - **資料量**：`prices_daily.parquet` 有 740 萬列。讀取時用 `filters=[("code", "==", code)]` 或日期篩選，不要整檔載入；共用的大表要做快取（例如 Streamlit 的 `st.cache_data`）。
@@ -104,6 +105,15 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | LLM 決策（三組淨值加 0050、比較表、選股檢定、準前瞻回放、決策紀錄） | 只讀 `data/paper/llm_decisions.jsonl` 與 `llm_replay.jsonl`。選股檢定用 `llm_trader.selection_test`，回放結果用 `llm_replay.evaluate`（各自快取）。三組淨值用 `mine.replay`。點決策列看理由與風險，再打開個股頁。不從前端呼叫 API |
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
+
+## 頁：虛擬下單
+
+| 功能 | 來源 |
+|---|---|
+| 開帳戶（自訂虛擬資金）、開新帳戶（舊帳戶保留，畫面顯示最後開的） | `trade.open_account(capital)`；開戶時記下 0050 價格當同期對照 |
+| 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、未實現損益）；盤中每 10 秒更新 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.quote`（盤中 `common.live_quotes`，其他時候最後收盤價） |
+| 下單：選股票、買賣、張或零股、數量；先顯示成交價與來源、金額、手續費、證交稅、下單後現金，不能成交時顯示原因 | `trade.quote(code, side, live=...)`、`trade.check(st, code, side, shares, q)`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl` |
+| 成交紀錄 | 同上，`state["trades"]` |
 
 ## 頁：主題
 

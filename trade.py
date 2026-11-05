@@ -19,8 +19,9 @@
   - 漲停買不到、跌停賣不掉：即時報價看證交所給的漲跌停價；收盤價成交時看當天報酬是否達 ±9.5%（同 strategy._limits）
   - 現金不夠不能買，持股不夠不能賣（不做融資融券、不能放空）
   - 持股成本用平均成本（含買進手續費）；賣出時的已實現損益 = 賣得金額 − 手續費 − 稅 − 平均成本 × 股數
-  - 不處理除權息與減資：配息不入帳、除權後股價下跌會算成虧損
-  - 同期 0050：開帳戶時記下 0050 價格，之後用現在價格算同期漲跌（不含息）
+  - 除權息：除權息日前一天收盤還持有的，每股（前收盤 − 參考價）當成現金入帳（dividends；來源 price_events.parquet，
+    晚上更新資料後才會出現；配股也折成現金、不增加股數；不扣股利所得稅與二代健保）。減資、變更面額不處理
+  - 同期 0050：開帳戶時記下 0050 價格，之後用現在價格算同期報酬，除息用 前收盤 ÷ 參考價 還原（含息）
 
 紀錄 data/paper/my_trades.jsonl（只追加不改寫），一行一筆：type = open（開帳戶）或 trade（成交）。
 """
@@ -80,10 +81,11 @@ def quote(code: str, side: str = "buy", now: datetime | None = None, live: dict 
             src += "（今天還沒成交，用最佳" + ("賣價" if side == "buy" else "買價") + "）"
         if px:
             return _from_quote(px, src, True)
+        raise ValueError(f"現在沒有{'賣單' if side == 'buy' else '買單'}可以成交（可能{'漲停' if side == 'buy' else '跌停'}）")
     c = last_close(code)
     if not realtime.session_open(now) and qd is not None and q.get("last") and not q.get("indicative") \
             and (c is None or qd > c["date"]):
-        return _from_quote(q["last"], f"收盤價 {qd:%Y-%m-%d}（證交所報價，晚上更新資料前）", False)
+        return _from_quote(q["last"], f"收盤價 {qd:%Y-%m-%d}（證交所）", False)
     if c is None:
         raise ValueError(f"查不到 {code} 的行情")
     return {"price": c["price"], "src": f"收盤價 {c['date']:%Y-%m-%d}", "name": c["name"], "live": False, "date": c["date"],
@@ -95,7 +97,13 @@ def quote(code: str, side: str = "buy", now: datetime | None = None, live: dict 
 def load(path: Path = LEDGER) -> list[dict]:
     if not path.exists():
         return []
-    return [json.loads(ln) for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    rows = []
+    for ln in path.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(ln))
+        except ValueError:      # 空行，或寫到一半中斷的最後一行
+            continue
+    return rows
 
 
 def _append(rec: dict, path: Path) -> dict:
@@ -126,11 +134,47 @@ def open_account(capital: float = DEFAULT_CAPITAL, path: Path = LEDGER, now: dat
                     "capital": float(capital), "bench_price": bench}, path)
 
 
-def state(rows: list[dict], account: str | None = None) -> dict:
-    """帳戶的現金、持股（股數、平均成本）、已實現損益與成交紀錄。"""
+def dividends(rows: list[dict], account: str | None = None) -> pd.DataFrame:
+    """除權息入帳：除權息日前一天收盤還持有的股數 ×（前收盤 − 參考價），當成現金。
+    配股也折成現金（除權後的總價值相同，只是不增加股數）；不扣股利所得稅與二代健保。"""
+    cols = ["date", "code", "name", "shares", "per_share", "amount"]
     account = account or current(rows)
-    st = {"account": account, "capital": 0.0, "cash": 0.0, "realized": 0.0, "fees": 0.0, "opened": None,
-          "bench_price": None, "pos": {}, "trades": []}
+    op = next((r for r in rows if r["type"] == "open" and r["account"] == account), None)
+    tr = pd.DataFrame([r for r in rows if r["type"] == "trade" and r["account"] == account])
+    path = OUT / "price_events.parquet"
+    if op is None or tr.empty or not path.exists():
+        return pd.DataFrame(columns=cols)
+    ev = pd.read_parquet(path, columns=["date", "code", "name", "prev_close", "ref", "kind"],
+                         filters=[("code", "in", sorted(set(tr["code"]))), ("kind", "==", "div"),
+                                  ("date", ">", pd.Timestamp(op["ts"]).normalize())])
+    tr["day"] = pd.to_datetime(tr["ts"])
+    tr["dsh"] = tr["shares"].where(tr["side"] == "buy", -tr["shares"])
+    out = []
+    for e in ev.sort_values("date").itertuples():
+        sh = tr.loc[(tr["code"] == e.code) & (tr["day"] < e.date), "dsh"].sum()     # 除權息當天買的不算
+        if sh > 0:
+            per = e.prev_close - e.ref
+            out.append({"date": e.date, "code": e.code, "name": e.name, "shares": int(sh), "per_share": per,
+                        "amount": float(round(per * sh))})
+    return pd.DataFrame(out, columns=cols)
+
+
+def bench_factor(since: str | pd.Timestamp) -> pd.Series:
+    """0050 除息還原：開帳戶之後每次除息的 前收盤 ÷ 參考價，累乘；索引是除息日。"""
+    path = OUT / "price_events.parquet"
+    if not path.exists():
+        return pd.Series(dtype=float)
+    ev = pd.read_parquet(path, columns=["date", "code", "prev_close", "ref", "kind"],
+                         filters=[("code", "==", BENCH), ("date", ">", pd.Timestamp(since).normalize())])
+    ev = ev[ev["ref"] > 0].sort_values("date")
+    return (ev["prev_close"] / ev["ref"]).set_axis(ev["date"]).cumprod()
+
+
+def state(rows: list[dict], account: str | None = None, divs: pd.DataFrame | None = None) -> dict:
+    """帳戶的現金、持股（股數、平均成本）、已實現損益與成交紀錄；divs（dividends 的結果）有給就把配息加進現金。"""
+    account = account or current(rows)
+    st = {"account": account, "capital": 0.0, "cash": 0.0, "realized": 0.0, "fees": 0.0, "dividends": 0.0,
+          "opened": None, "bench_price": None, "pos": {}, "trades": []}
     for r in rows:
         if r.get("account") != account:
             continue
@@ -151,6 +195,9 @@ def state(rows: list[dict], account: str | None = None) -> dict:
         st["fees"] += r["fee"] + r["tax"]
         st["trades"].append(r)
     st["pos"] = {c: p for c, p in st["pos"].items() if p["shares"] > 0}
+    if divs is not None and len(divs):
+        st["dividends"] = float(divs["amount"].sum())
+        st["cash"] += st["dividends"]
     return st
 
 
@@ -181,7 +228,7 @@ def place(code: str, side: str, shares: int, path: Path = LEDGER, now: datetime 
           q: dict | None = None) -> dict:
     """下單並寫入帳本；q 沒給就現查價格。"""
     rows = load(path)
-    st = state(rows)
+    st = state(rows, divs=dividends(rows))
     q = q or quote(code, side, now=now)
     c = check(st, code, side, shares, q)
     return _append({"type": "trade", "ts": (now or datetime.now()).isoformat(timespec="seconds"),
@@ -201,7 +248,7 @@ def max_shares(cash: float, price: float, code: str) -> int:
 
 
 def nav(rows: list[dict], account: str | None = None) -> pd.DataFrame:
-    """帳戶每天收盤的總資產（現金 + 持股 × 收盤價）與同期 0050（開帳戶時買進持有、不含息），到最新資料日。
+    """帳戶每天收盤的總資產（現金 + 配息 + 持股 × 收盤價）與同期 0050（開帳戶時買進持有、含息），到最新資料日。
     週末或盤後的成交算在下一個交易日；資料還沒更新到的成交不畫。"""
     account = account or current(rows)
     op = next((r for r in rows if r["type"] == "open" and r["account"] == account), None)
@@ -229,9 +276,13 @@ def nav(rows: list[dict], account: str | None = None) -> pd.DataFrame:
         cash += tr.groupby("day")["dcash"].sum().reindex(days, fill_value=0).cumsum()
         sh = tr.pivot_table(index="day", columns="code", values="dsh", aggfunc="sum").reindex(days, fill_value=0).cumsum()
         hold = (sh * close.reindex(index=days, columns=sh.columns)).sum(axis=1)
+    dv = dividends(rows, account)
+    if len(dv):
+        cash += dv.groupby("date")["amount"].sum().reindex(days, fill_value=0).cumsum()
     out["nav"] = cash + hold
     bp = op.get("bench_price")
-    out["bench"] = close[BENCH].reindex(days) / bp * op["capital"] if bp and BENCH in close else float("nan")
+    fac = bench_factor(op["ts"]).reindex(days).ffill().fillna(1.0)
+    out["bench"] = close[BENCH].reindex(days) / bp * op["capital"] * fac if bp and BENCH in close else float("nan")
     return out
 
 
@@ -265,7 +316,8 @@ def main():
                   f"手續費 {r['fee']:,.0f}、稅 {r['tax']:,.0f}，現金剩 {r['cash_after']:,.0f}")
     except ValueError as err:
         raise SystemExit(f"失敗：{err}")
-    st = state(load())
+    rows = load()
+    st = state(rows, divs=dividends(rows))
     if st["account"] is None:
         print("還沒有帳戶（uv run trade.py open）")
         return
@@ -278,7 +330,7 @@ def main():
     h = holdings(st, prices)
     total = st["cash"] + h["value"].sum()
     print(f"[{st['account']}] 現金 {st['cash']:,.0f}、持股市值 {h['value'].sum():,.0f}、總資產 {total:,.0f}"
-          f"（{total / st['capital'] - 1:+.2%}），已實現 {st['realized']:,.0f}，成本合計 {st['fees']:,.0f}")
+          f"（{total / st['capital'] - 1:+.2%}），已實現 {st['realized']:,.0f}，配息 {st['dividends']:,.0f}，成本合計 {st['fees']:,.0f}")
     for r in h.itertuples():
         print(f"  {r.code} {r.name} {r.shares:,} 股  成本 {r.avg_cost:.2f}  現價 {r.price:.2f}  損益 {r.pnl:+,.0f}（{r.ret:+.2%}）")
 

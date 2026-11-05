@@ -114,7 +114,8 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 |---|---|
 | 開帳戶（自訂虛擬資金）、開新帳戶（舊帳戶保留，畫面顯示最後開的） | `trade.open_account(capital)`；開戶時記下 0050 價格當同期對照 |
 | 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、占資產、未實現損益）；盤中每 10 秒更新；點持股列帶入全部股數賣出 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.quote`（盤中 `common.live_quotes`，其他時候最後收盤價） |
-| 帳戶總資產曲線對同期 0050（每日收盤，到最新資料日） | `trade.nav(rows)` |
+| 帳戶總資產曲線對同期 0050（每日收盤，到最新資料日；0050 含息） | `trade.nav(rows)`、`trade.bench_factor(opened)` |
+| 配息入帳（除權息日、持有股數、每股、入帳金額）；現金與總報酬已含配息 | `trade.dividends(rows)`（讀 `price_events.parquet` 的 div 事件），傳給 `trade.state(rows, divs=...)` |
 | 下單：選股票、買賣、張或零股、數量；先顯示成交價與來源、金額、手續費、證交稅、下單後現金、最多可買股數，不能成交時顯示原因；收盤價太舊時提醒 | `trade.quote(code, side, live=...)`、`trade.check(st, code, side, shares, q)`、`trade.max_shares`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl` |
 | 成交紀錄 | 同上，`state["trades"]` |
 | 從個股頁進來 | 個股頁代號旁的「虛擬下單」按鈕，`common.goto_trade(code)` 帶入股票 |

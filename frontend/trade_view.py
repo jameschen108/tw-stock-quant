@@ -55,14 +55,15 @@ def _account(stt: dict, sig: str) -> None:
     mv = float(h["value"].sum())
     total = stt["cash"] + mv
     bench = px.get(trade.BENCH, {}).get("price")
-    b_ret = bench / stt["bench_price"] - 1 if bench and stt["bench_price"] else None
+    fac = trade.bench_factor(stt["opened"])
+    b_ret = bench / stt["bench_price"] * (fac.iloc[-1] if len(fac) else 1.0) - 1 if bench and stt["bench_price"] else None
     common.kpis([
         ("總資產", f"{total:,.0f}", f"初始 {stt['capital']:,.0f}", True),
-        ("總報酬", common.signed_html(total / stt["capital"] - 1, 2), "含已實現與未實現，已扣成本"),
-        (f"同期 {trade.BENCH}", common.signed_html(b_ret, 2), "開帳戶後的漲跌，不含息"),
+        ("總報酬", common.signed_html(total / stt["capital"] - 1, 2), "含已實現、未實現與配息，已扣成本"),
+        (f"同期 {trade.BENCH}", common.signed_html(b_ret, 2), "開帳戶後買進持有，含息"),
         ("現金", f"{stt['cash']:,.0f}", f"占總資產 {stt['cash'] / total:.0%}" if total else ""),
         ("持股市值", f"{mv:,.0f}", f"{len(h)} 檔"),
-        ("已實現損益", common.signed_html(stt["realized"], 0, 1, " 元"), ""),
+        ("已實現損益", common.signed_html(stt["realized"], 0, 1, " 元"), f"另有配息 {stt['dividends']:,.0f} 元"),
         ("交易成本", f"{stt['fees']:,.0f}", "手續費 + 證交稅"),
     ])
     st.subheader("持股")
@@ -98,7 +99,7 @@ def _nav(rows: list[dict]) -> None:
         series[f"同期 {trade.BENCH}"] = n["bench"]
     common.chart(common.line_fig(n.index, series, "帳戶總資產（每日收盤）",
                                  {"我的帳戶": common.C_STRAT, f"同期 {trade.BENCH}": common.C_ETF}, 300))
-    st.caption(f"到 {n.index[-1]:%Y-%m-%d} 收盤；之後的成交等資料更新後才會畫進來。{trade.BENCH} 是開帳戶時用同樣資金買進持有。")
+    st.caption(f"到 {n.index[-1]:%Y-%m-%d} 收盤；之後的成交等資料更新後才會畫進來。{trade.BENCH} 是開帳戶時用同樣資金買進持有（含息）。")
 
 
 def _order(stt: dict, sig: str) -> None:
@@ -174,12 +175,23 @@ def _history(stt: dict) -> None:
                                           "證交稅": "{:,.0f}", "成交後現金": "{:,.0f}"}), hide_index=True)
 
 
+def _dividends(divs: pd.DataFrame) -> None:
+    if divs.empty:
+        return
+    st.subheader("配息入帳")
+    show = divs.iloc[::-1].assign(date=divs["date"].dt.strftime("%Y-%m-%d")).rename(columns={
+        "date": "除權息日", "code": "代號", "name": "名稱", "shares": "持有股數", "per_share": "每股", "amount": "入帳金額"})
+    common.table(common.styled(show, fmt={"持有股數": "{:,.0f}", "每股": "{:,.2f}", "入帳金額": "{:,.0f}"}), hide_index=True)
+    st.caption("除權息日前一天收盤還持有的，每股（前收盤 − 參考價）當成現金入帳；配股也折成現金。晚上更新資料後才會出現。")
+
+
 def render(sig: str) -> None:
     st.caption("用虛擬資金自己買賣：按下去就成交。盤中用證交所即時報價（延遲約 5 秒），盤後用最後收盤價；手續費、證交稅照實扣；"
-               "漲停買不到、跌停賣不掉；不能融資融券或放空；配息與除權不入帳。和「自選組合」不同，這裡不用設定權重，"
+               "漲停買不到、跌停賣不掉；不能融資融券或放空；除權息折成現金入帳。和「自選組合」不同，這裡不用設定權重，"
                "也不用等隔天收盤。不是真實下單，也不代表真的買得到這個價格。")
     rows = trade.load()
-    stt = trade.state(rows)
+    divs = trade.dividends(rows)
+    stt = trade.state(rows, divs=divs)
     if stt["account"] is None:
         common.empty("還沒有帳戶。先決定虛擬資金，開一個帳戶。")
         _open_form(first=True)
@@ -191,6 +203,7 @@ def render(sig: str) -> None:
     _order(stt, sig)
     st.subheader("成交紀錄")
     _history(stt)
+    _dividends(divs)
     with st.expander("開新帳戶"):
         st.caption("舊帳戶的紀錄會保留在 data/paper/my_trades.jsonl，畫面改顯示新帳戶。")
         _open_form(first=False)

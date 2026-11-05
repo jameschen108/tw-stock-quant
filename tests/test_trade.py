@@ -1,4 +1,4 @@
-"""trade.py 的虛擬下單：成交價來源、成本、漲跌停、現金與持股檢查、平均成本與已實現損益（合成資料）。"""
+"""trade.py 的虛擬下單：成交價來源、成本、漲跌停、現金與持股檢查、平均成本與已實現損益、配息（合成資料）。"""
 from datetime import datetime
 
 import pandas as pd
@@ -14,8 +14,14 @@ def _q(price, up=False, down=False):
     return {"price": price, "src": "測試", "name": "測試股", "live": False, "up": up, "down": down}
 
 
+def _events(tmp_path, rows):
+    pd.DataFrame(rows, columns=["date", "code", "name", "prev_close", "ref", "kind"]).assign(
+        date=lambda d: pd.to_datetime(d["date"])).to_parquet(tmp_path / "price_events.parquet", index=False)
+
+
 @pytest.fixture
-def ledger(tmp_path):
+def ledger(tmp_path, monkeypatch):
+    monkeypatch.setattr(trade, "OUT", tmp_path)                             # 不讀真實的除權息資料
     p = tmp_path / "my_trades.jsonl"
     trade.open_account(100_000, path=p, now=OPEN_TIME, bench=100.0)
     return p
@@ -79,6 +85,41 @@ def test_new_account_starts_fresh_and_keeps_old(ledger):
     assert trade.state(rows, "帳戶 1")["pos"]["1101"]["shares"] == 100       # 舊帳戶還在
 
 
+def test_dividend_only_if_held_before_ex_date(ledger, tmp_path):
+    trade.place("1101", "buy", 1000, path=ledger, now=datetime(2026, 11, 5, 10, 0), q=_q(50.0))
+    trade.place("1102", "buy", 1000, path=ledger, now=datetime(2026, 11, 9, 10, 0), q=_q(30.0))   # 除息當天才買
+    _events(tmp_path, [("2026-11-09", "1101", "台泥", 50.0, 48.5, "div"), ("2026-11-09", "1102", "亞泥", 30.0, 29.0, "div"),
+                       ("2026-11-04", "1101", "台泥", 51.0, 50.0, "div")])                      # 開帳戶前的不算
+    rows = trade.load(ledger)
+    d = trade.dividends(rows)
+    assert d[["code", "shares", "amount"]].values.tolist() == [["1101", 1000, 1500.0]]
+    st = trade.state(rows, divs=d)
+    assert st["dividends"] == 1500.0
+    assert st["cash"] == pytest.approx(100_000 - 50_071 - 30_043 + 1500)
+    assert trade.state(rows)["cash"] == pytest.approx(100_000 - 50_071 - 30_043)    # 沒給 divs 就不算
+
+
+def test_place_counts_dividend_cash(ledger, tmp_path):
+    trade.place("1101", "buy", 1900, path=ledger, now=datetime(2026, 11, 5, 10, 0), q=_q(50.0))   # 剩 4,865
+    _events(tmp_path, [("2026-11-09", "1101", "台泥", 50.0, 45.0, "div")])                       # 配 9,500
+    trade.place("1102", "buy", 400, path=ledger, now=datetime(2026, 11, 10, 10, 0), q=_q(30.0))  # 12,017 要靠配息
+    assert trade.state(trade.load(ledger))["pos"]["1102"]["shares"] == 400
+
+
+def test_quote_in_session_without_counter_order_raises(tmp_path, monkeypatch):
+    _prices(tmp_path, monkeypatch)
+    live = {"1101": {"last": None, "indicative": True, "date": pd.Timestamp(OPEN_TIME.date()), "time": "10:00:00",
+                     "name": "台泥", "limit_up": 22.0, "limit_down": 18.0, "bid": 22.0, "ask": None}}
+    with pytest.raises(ValueError, match="沒有賣單"):                        # 漲停鎖死沒有賣單：不能退回用昨天收盤價
+        trade.quote("1101", "buy", now=OPEN_TIME, live=live)
+
+
+def test_load_skips_broken_line(ledger):
+    with ledger.open("a", encoding="utf-8") as f:
+        f.write('{"type": "trade", "acc')                                  # 寫到一半中斷
+    assert trade.current(trade.load(ledger)) == "帳戶 1"
+
+
 def test_max_shares_covers_fee():
     n = trade.max_shares(100_000, 50.0, "1101")
     amt = round(n * 50.0)
@@ -104,6 +145,10 @@ def test_nav_marks_to_close_and_bench(tmp_path, monkeypatch):
     assert list(n.index) == list(days)
     assert n["nav"].tolist() == pytest.approx([cash1 + 10_000, cash2 + 600 * 11, cash2 + 600 * 12, cash2 + 600 * 9])
     assert n["bench"].tolist() == pytest.approx([100_000, 101_000, 102_000, 103_000])
+    _events(tmp_path, [(days[2], "1101", "台泥", 11.0, 10.5, "div"), (days[3], trade.BENCH, "元大台灣50", 102.0, 100.0, "div")])
+    n = trade.nav(trade.load(led))
+    assert n["nav"].tolist() == pytest.approx([cash1 + 10_000, cash2 + 600 * 11, cash2 + 300 + 600 * 12, cash2 + 300 + 600 * 9])
+    assert n["bench"].iloc[-1] == pytest.approx(103_000 * 102 / 100)                 # 0050 含息
 
 
 def _prices(tmp_path, monkeypatch, close=20.0, ret=0.01):
@@ -142,6 +187,6 @@ def test_quote_after_close_prefers_newer_exchange_close(tmp_path, monkeypatch):
     live = {"1101": {"last": 21.0, "indicative": False, "date": pd.Timestamp(after.date()), "time": "13:30:00",
                      "name": "台泥", "limit_up": 22.0, "limit_down": 18.0}}
     q = trade.quote("1101", now=after, live=live)                             # 收盤後、晚上更新資料前
-    assert q["price"] == 21.0 and not q["live"] and "證交所報價" in q["src"]
+    assert q["price"] == 21.0 and not q["live"] and "證交所" in q["src"]
     live["1101"]["date"] = days[-1]                                           # 報價沒有比資料新 → 用資料
     assert trade.quote("1101", now=after, live=live)["price"] == 20.0

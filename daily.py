@@ -327,7 +327,7 @@ def render(rows, comp_date, ss, cur, ind, asof, prev_asof, pp=None, pk=None, ps=
                     "毛利率年增（點）", "毛利率名次", "營益率", "EPS", "去年同季 EPS"]
             body = "".join(
                 "<tr>" + "".join(f"<td>{c}</td>" for c in [
-                    f"{r.avail_date:%m/%d}", ("★ " if r.watch else "") + e(r.code), e(r.name), e(str(r.產業 or "—")),
+                    f"{r.avail_date:%m/%d}", ("★ " if r.watch else "") + e(r.code), e(r.name), "—" if pd.isna(r.產業) else e(str(r.產業)),
                     _num(r.mcap_億, 0), _num(r.營業收入淨額 / 1e5), _pct(r.rev_yoy),
                     "—" if pd.isna(r.rev_rank) else f"{r.rev_rank:.0f}/{r.n_q}", _num(r.營業毛利率, 1),
                     _num(r.gm_chg, 1, True), "—" if pd.isna(r.gm_rank) else f"{r.gm_rank:.0f}/{r.n_q}",

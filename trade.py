@@ -12,8 +12,9 @@
 
 規則:
   - 成交價：盤中（平日 09:00–13:35）用證交所即時報價的成交價（realtime.quotes，延遲約 5 秒）；
-    今天還沒有成交時，買用最佳賣價、賣用最佳買價。盤後、查不到報價或報價不是今天的，
-    用 prices_daily 最後一天收盤價成交（類似盤後定價交易），紀錄寫明價格來源與日期
+    今天還沒有成交時，買用最佳賣價、賣用最佳買價。盤後用最後收盤價成交（類似盤後定價交易）：
+    證交所報價的日期比 prices_daily 新（收盤後到晚上更新資料前）就用報價的收盤價，否則用 prices_daily
+    最後一天；盤中查不到今天的報價也用 prices_daily。紀錄寫明價格來源與日期
   - 成本：同 strategy.DEFAULTS["cost"]（手續費 0.1425%、每筆最低 20 元）；賣出證交稅股票 0.3%、ETF（00 開頭）0.1%
   - 漲停買不到、跌停賣不掉：即時報價看證交所給的漲跌停價；收盤價成交時看當天報酬是否達 ±9.5%（同 strategy._limits）
   - 現金不夠不能買，持股不夠不能賣（不做融資融券、不能放空）
@@ -64,21 +65,28 @@ def last_close(code: str) -> dict | None:
 def quote(code: str, side: str = "buy", now: datetime | None = None, live: dict | None = None) -> dict:
     """成交價與來源：{price, src, name, live, up, down}。live 是已經查好的 realtime.quotes 結果（前端快取用）。"""
     now = now or datetime.now()
-    if realtime.session_open(now):
-        q = (live if live is not None else realtime.quotes([code])).get(code)
-        if q and q.get("date") is not None and q["date"].date() == now.date():
-            px, src = q.get("last"), f"即時 {q.get('time') or ''}".strip()
-            if q.get("indicative"):
-                px = q.get("ask") if side == "buy" else q.get("bid")
-                src += "（今天還沒成交，用最佳" + ("賣價" if side == "buy" else "買價") + "）"
-            if px:
-                return {"price": float(px), "src": src, "name": q.get("name"), "live": True,
-                        "up": q.get("limit_up") is not None and px >= q["limit_up"],
-                        "down": q.get("limit_down") is not None and px <= q["limit_down"]}
+    q = (live if live is not None else realtime.quotes([code])).get(code)
+    qd = q.get("date") if q else None
+
+    def _from_quote(px, src, is_live):
+        return {"price": float(px), "src": src, "name": q.get("name"), "live": is_live, "date": qd,
+                "up": q.get("limit_up") is not None and px >= q["limit_up"],
+                "down": q.get("limit_down") is not None and px <= q["limit_down"]}
+
+    if realtime.session_open(now) and qd is not None and qd.date() == now.date():
+        px, src = q.get("last"), f"即時 {q.get('time') or ''}".strip()
+        if q.get("indicative"):
+            px = q.get("ask") if side == "buy" else q.get("bid")
+            src += "（今天還沒成交，用最佳" + ("賣價" if side == "buy" else "買價") + "）"
+        if px:
+            return _from_quote(px, src, True)
     c = last_close(code)
+    if not realtime.session_open(now) and qd is not None and q.get("last") and not q.get("indicative") \
+            and (c is None or qd > c["date"]):
+        return _from_quote(q["last"], f"收盤價 {qd:%Y-%m-%d}（證交所報價，晚上更新資料前）", False)
     if c is None:
         raise ValueError(f"查不到 {code} 的行情")
-    return {"price": c["price"], "src": f"收盤價 {c['date']:%Y-%m-%d}", "name": c["name"], "live": False,
+    return {"price": c["price"], "src": f"收盤價 {c['date']:%Y-%m-%d}", "name": c["name"], "live": False, "date": c["date"],
             "up": c["up"], "down": c["down"]}
 
 
@@ -180,6 +188,51 @@ def place(code: str, side: str, shares: int, path: Path = LEDGER, now: datetime 
                     "account": st["account"], "code": code, "name": q.get("name"), "side": side, "shares": int(shares),
                     "price": q["price"], "src": q["src"], "amount": c["amount"], "fee": c["fee"], "tax": c["tax"],
                     "cash_after": round(st["cash"] + c["net"], 2)}, path)
+
+
+def max_shares(cash: float, price: float, code: str) -> int:
+    """現金最多買得起幾股（含手續費）。"""
+    if price <= 0 or cash <= 0:
+        return 0
+    n = int(cash // (price * (1 + COST["fee_rate"] * COST["fee_discount"])))
+    while n > 0 and round(n * price) + costs(code, "buy", round(n * price))[0] > cash:
+        n -= 1
+    return n
+
+
+def nav(rows: list[dict], account: str | None = None) -> pd.DataFrame:
+    """帳戶每天收盤的總資產（現金 + 持股 × 收盤價）與同期 0050（開帳戶時買進持有、不含息），到最新資料日。
+    週末或盤後的成交算在下一個交易日；資料還沒更新到的成交不畫。"""
+    account = account or current(rows)
+    op = next((r for r in rows if r["type"] == "open" and r["account"] == account), None)
+    if op is None:
+        return pd.DataFrame(columns=["nav", "bench"])
+    tr = pd.DataFrame([r for r in rows if r["type"] == "trade" and r["account"] == account],
+                      columns=["ts", "code", "side", "shares", "amount", "fee", "tax"])
+    start = pd.Timestamp(op["ts"]).normalize()
+    codes = sorted(set(tr["code"]) | {BENCH})
+    px = pd.read_parquet(OUT / "prices_daily.parquet", columns=["date", "code", "close"],
+                         filters=[("code", "in", codes), ("date", ">=", start - pd.Timedelta(days=15))])
+    close = px.pivot_table(index="date", columns="code", values="close").sort_index().ffill()
+    days = close.index[close.index >= start]
+    if days.empty:
+        return pd.DataFrame(columns=["nav", "bench"])
+    out = pd.DataFrame(index=days)
+    cash = pd.Series(op["capital"], index=days)
+    hold = pd.Series(0.0, index=days)
+    if len(tr):
+        tr["day"] = days[days.searchsorted(pd.to_datetime(tr["ts"]).dt.normalize()).clip(0, len(days) - 1)]
+        tr = tr[pd.to_datetime(tr["ts"]).dt.normalize() <= days[-1]]
+        buy = tr["side"] == "buy"
+        tr["dcash"] = (-(tr["amount"] + tr["fee"])).where(buy, tr["amount"] - tr["fee"] - tr["tax"])
+        tr["dsh"] = tr["shares"].where(buy, -tr["shares"])
+        cash += tr.groupby("day")["dcash"].sum().reindex(days, fill_value=0).cumsum()
+        sh = tr.pivot_table(index="day", columns="code", values="dsh", aggfunc="sum").reindex(days, fill_value=0).cumsum()
+        hold = (sh * close.reindex(index=days, columns=sh.columns)).sum(axis=1)
+    out["nav"] = cash + hold
+    bp = op.get("bench_price")
+    out["bench"] = close[BENCH].reindex(days) / bp * op["capital"] if bp and BENCH in close else float("nan")
+    return out
 
 
 def holdings(st: dict, prices: dict[str, float]) -> pd.DataFrame:

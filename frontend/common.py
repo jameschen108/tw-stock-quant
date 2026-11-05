@@ -466,6 +466,13 @@ def goto_stock(code: str) -> None:
     st.switch_page("p2_stock.py")
 
 
+def goto_trade(code: str) -> None:
+    """打開模擬持股頁的虛擬下單，帶入這檔股票（買進）。"""
+    st.session_state.update(goto_trade_code=code, paper_section="虛擬下單", _paper_section_last="虛擬下單",
+                            trade_side="買進", _trade_side_last="買進")
+    st.switch_page("p4_paper.py")
+
+
 # ---------------------------------------------------------------- 圖表
 
 def fig_layout(fig, title: str = "", height: int = 340, legend: bool = True):

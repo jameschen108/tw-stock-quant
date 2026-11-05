@@ -79,6 +79,33 @@ def test_new_account_starts_fresh_and_keeps_old(ledger):
     assert trade.state(rows, "帳戶 1")["pos"]["1101"]["shares"] == 100       # 舊帳戶還在
 
 
+def test_max_shares_covers_fee():
+    n = trade.max_shares(100_000, 50.0, "1101")
+    amt = round(n * 50.0)
+    assert amt + trade.costs("1101", "buy", amt)[0] <= 100_000
+    amt = round((n + 1) * 50.0)
+    assert amt + trade.costs("1101", "buy", amt)[0] > 100_000
+    assert trade.max_shares(10, 50.0, "1101") == 0
+
+
+def test_nav_marks_to_close_and_bench(tmp_path, monkeypatch):
+    monkeypatch.setattr(trade, "OUT", tmp_path)
+    days = pd.bdate_range("2026-11-02", periods=4)                       # 週一到週四
+    px = pd.concat([pd.DataFrame({"date": days, "code": "1101", "close": [10.0, 11.0, 12.0, 9.0]}),
+                    pd.DataFrame({"date": days, "code": trade.BENCH, "close": [100.0, 101.0, 102.0, 103.0]})])
+    px.to_parquet(tmp_path / "prices_daily.parquet", index=False)
+    led = tmp_path / "t.jsonl"
+    trade.open_account(100_000, path=led, now=datetime(2026, 11, 2, 9, 30), bench=100.0)
+    trade.place("1101", "buy", 1000, path=led, now=datetime(2026, 11, 2, 10, 0), q=_q(10.0))        # 10,000 + 20
+    trade.place("1101", "sell", 400, path=led, now=datetime(2026, 11, 3, 18, 0), q=_q(11.0))        # 盤後，算當天
+    n = trade.nav(trade.load(led))
+    cash1 = 100_000 - 10_020
+    cash2 = cash1 + 4_400 - 20 - 13
+    assert list(n.index) == list(days)
+    assert n["nav"].tolist() == pytest.approx([cash1 + 10_000, cash2 + 600 * 11, cash2 + 600 * 12, cash2 + 600 * 9])
+    assert n["bench"].tolist() == pytest.approx([100_000, 101_000, 102_000, 103_000])
+
+
 def _prices(tmp_path, monkeypatch, close=20.0, ret=0.01):
     monkeypatch.setattr(trade, "OUT", tmp_path)
     days = pd.bdate_range(pd.Timestamp.today().normalize() - pd.Timedelta(days=10), periods=3)
@@ -107,3 +134,14 @@ def test_quote_uses_live_price_in_session(tmp_path, monkeypatch):
     assert trade.quote("1101", "sell", now=OPEN_TIME, live=live)["price"] == 21.45
     live["1101"]["date"] = pd.Timestamp("2026-11-04")                         # 報價不是今天 → 收盤價
     assert trade.quote("1101", now=OPEN_TIME, live=live)["price"] == 20.0
+
+
+def test_quote_after_close_prefers_newer_exchange_close(tmp_path, monkeypatch):
+    days = _prices(tmp_path, monkeypatch)
+    after = datetime.combine(days[-1].date() + pd.Timedelta(days=1), datetime.min.time()).replace(hour=15)
+    live = {"1101": {"last": 21.0, "indicative": False, "date": pd.Timestamp(after.date()), "time": "13:30:00",
+                     "name": "台泥", "limit_up": 22.0, "limit_down": 18.0}}
+    q = trade.quote("1101", now=after, live=live)                             # 收盤後、晚上更新資料前
+    assert q["price"] == 21.0 and not q["live"] and "證交所報價" in q["src"]
+    live["1101"]["date"] = days[-1]                                           # 報價沒有比資料新 → 用資料
+    assert trade.quote("1101", now=after, live=live)["price"] == 20.0

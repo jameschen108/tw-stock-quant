@@ -1,4 +1,4 @@
-"""模擬持股：綜合分數前 30、多策略摘要、紀錄、淨值（淨值序列等後端）。"""
+"""模擬持股：綜合分數前 30、多策略摘要、紀錄、淨值（淨值序列等後端）、自選組合、虛擬下單、LLM 決策。"""
 import json
 import sys
 from pathlib import Path
@@ -16,6 +16,7 @@ import llm_replay
 import llm_trader
 import mine
 import paper
+import trade_view
 
 STRAT_NAV = paper.PAPER / "strat_nav.parquet"
 
@@ -707,7 +708,7 @@ summary = common.cached_paper_summary(sig)
 strats = paper.load_strategy_summaries()
 common.page_title("模擬持股", f"即時紀錄，起點之前沒有資料・多策略 {len(strats)} 個")
 
-section = common.segmented("區塊", ["策略追蹤", "自選組合", "LLM 決策"], "策略追蹤",
+section = common.segmented("區塊", ["策略追蹤", "自選組合", "虛擬下單", "LLM 決策"], "策略追蹤",
                            key="paper_section", label_visibility="collapsed")
 if section == "策略追蹤":
     st.subheader("綜合分數前 30")
@@ -725,5 +726,7 @@ if section == "策略追蹤":
             common.empty("沒有 paper_strategies.txt。")
 elif section == "自選組合":
     _mine()
+elif section == "虛擬下單":
+    trade_view.render(sig)
 elif section == "LLM 決策":
     _llm()

@@ -106,14 +106,18 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 | 追蹤哪些策略 | `paper_strategies.txt`（顯示即可；改了要等下個月才會記新策略） |
 | 各策略淨值曲線 | `data/paper/strat_nav.parquet`（strategy、date、nav、pool、etf）。10/26 進場前是 0 列，頁面說明等待進場，不畫空圖 |
 
-## 頁：虛擬下單
+### 頁 4 的「虛擬下單」區塊（`frontend/trade_view.py`）
+
+和自選組合的差別：自選組合輸入權重、隔一個交易日收盤成交，用來照規則追蹤；虛擬下單一筆一筆買賣（張或零股），按下去就用現價成交，有現金帳。
 
 | 功能 | 來源 |
 |---|---|
 | 開帳戶（自訂虛擬資金）、開新帳戶（舊帳戶保留，畫面顯示最後開的） | `trade.open_account(capital)`；開戶時記下 0050 價格當同期對照 |
-| 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、未實現損益）；盤中每 10 秒更新 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.quote`（盤中 `common.live_quotes`，其他時候最後收盤價） |
-| 下單：選股票、買賣、張或零股、數量；先顯示成交價與來源、金額、手續費、證交稅、下單後現金，不能成交時顯示原因 | `trade.quote(code, side, live=...)`、`trade.check(st, code, side, shares, q)`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl` |
+| 帳戶總覽：總資產、總報酬、同期 0050、現金、持股市值、已實現損益、交易成本；持股明細（股數、平均成本、現價、占資產、未實現損益）；盤中每 10 秒更新；點持股列帶入全部股數賣出 | `trade.state(trade.load())`、`trade.holdings(st, prices)`；現價用 `trade.quote`（盤中 `common.live_quotes`，其他時候最後收盤價） |
+| 帳戶總資產曲線對同期 0050（每日收盤，到最新資料日） | `trade.nav(rows)` |
+| 下單：選股票、買賣、張或零股、數量；先顯示成交價與來源、金額、手續費、證交稅、下單後現金、最多可買股數，不能成交時顯示原因；收盤價太舊時提醒 | `trade.quote(code, side, live=...)`、`trade.check(st, code, side, shares, q)`、`trade.max_shares`；按下才 `trade.place(..., q=q)` 寫入 `data/paper/my_trades.jsonl` |
 | 成交紀錄 | 同上，`state["trades"]` |
+| 從個股頁進來 | 個股頁代號旁的「虛擬下單」按鈕，`common.goto_trade(code)` 帶入股票 |
 
 ## 頁：主題
 

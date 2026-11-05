@@ -13,6 +13,7 @@
   name / description / start / capital（初始資金，元）
   [universe] filters   股票池條件（pandas query 字串），同時是「同池等權」基準
   [select]   filters / sort / ascending / n   選股條件、排序欄位、持股檔數
+             keep_n：換股緩衝帶，已持有的股票排名還在前 keep_n 就續抱，空位才由排名最前的新股補上；0 = 不用
   [position] weighting = "equal" | "inv_vol" | "score"；max_weight（單檔上限）；max_industry（單一產業上限）；
              exposure（股票部位佔資產比例，其餘現金）；min_trade（元）：續抱股票的加碼 / 減碼金額小於這個數就不調，
              避免每筆最低手續費吃掉小額調整（新買進、全部賣出不受影響）
@@ -67,7 +68,7 @@ from build_panel import OUT
 from report import CSS, svg_lines
 
 ROOT = Path(__file__).parent
-LATE = {"position": {"min_trade"}, "risk": {"stop_loss", "stop_type", "regime_freq", "dd_limit", "dd_exposure",
+LATE = {"select": {"keep_n"}, "position": {"min_trade"}, "risk": {"stop_loss", "stop_type", "regime_freq", "dd_limit", "dd_exposure",
                                              "take_profit", "max_hold_days"}}
 TRIALS = OUT / "strategy" / "trials.jsonl"
 RESULTS = OUT / "strategy" / "results"
@@ -79,7 +80,7 @@ PERIODS = {"全期": ("2000-01-01", "2100-01-01"), "樣本內 2011–2018": ("20
            "樣本外 2019–": ("2019-01-01", "2100-01-01"), "近期 2024–": ("2024-01-01", "2100-01-01")}
 DEFAULTS = {"start": "2011-01-01", "capital": 100_000,
             "universe": {"filters": ["avg_value >= 2e7"]},
-            "select": {"filters": [], "sort": "comp_equal", "ascending": False, "n": 30},
+            "select": {"filters": [], "sort": "comp_equal", "ascending": False, "n": 30, "keep_n": 0},
             "position": {"weighting": "equal", "max_weight": 1.0, "max_industry": 1.0, "exposure": 1.0, "min_trade": 0},
             "risk": {"regime": "none", "regime_index": "0050", "regime_ma": 200, "regime_off": 0.0,
                      "target_vol": 0.0, "vol_window": 60,
@@ -212,8 +213,13 @@ def select(day: pd.DataFrame, cfg: dict, held=()) -> tuple[pd.DataFrame, pd.Data
     for q in cfg["select"]["filters"]:
         pick = pick.query(q)
     s = cfg["select"]
-    pick = pick.dropna(subset=[s["sort"]]).sort_values(s["sort"], ascending=s["ascending"]).head(s["n"])
-    return pool, pick
+    ranked = pick.dropna(subset=[s["sort"]]).sort_values(s["sort"], ascending=s["ascending"])
+    if s.get("keep_n", 0) <= s["n"]:
+        return pool, ranked.head(s["n"])
+    kept = ranked.head(s["keep_n"])
+    kept = kept[kept["code"].isin(set(held))].head(s["n"])
+    fresh = ranked[~ranked["code"].isin(set(kept["code"]))].head(s["n"] - len(kept))
+    return pool, pd.concat([kept, fresh]).sort_values(s["sort"], ascending=s["ascending"])
 
 
 # ---------------------------------------------------------------- 總曝險

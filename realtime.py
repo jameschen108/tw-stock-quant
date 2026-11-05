@@ -2,7 +2,7 @@
 # requires-python = ">=3.11"
 # dependencies = ["pandas>=2.2", "pyarrow>=15"]
 # ///
-"""即時報價：證交所基本市況報導（mis.twse.com.tw，上市、上櫃都有，延遲約 5 秒）。只給前端顯示，不進任何計算或紀錄。
+"""即時報價：證交所基本市況報導（mis.twse.com.tw，上市、上櫃都有，延遲約 5 秒）。給前端顯示，以及虛擬下單（trade.py）的盤中成交價；不進模型、回測與模擬持股。
 
 用法:
   uv run realtime.py 2330 6488      # 印出即時報價（測試用）

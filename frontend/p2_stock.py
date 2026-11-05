@@ -50,7 +50,7 @@ def _picker(sig: str, default_asof: str):
     elif "stock_pick" not in st.session_state:
         q = st.query_params.get("code")
         st.session_state["stock_pick"] = by_code.get(q) or by_code.get("2330") or labels[0]
-    c1, c2, c3 = st.columns([3, 1, 0.7], vertical_alignment="bottom")
+    c1, c2, c3, c4 = st.columns([3, 1, 0.7, 0.7], vertical_alignment="bottom")
     chosen = c1.selectbox("股票（打代號或名稱篩選）", labels, key="stock_pick")
     asof = c2.date_input("資料時點", value=date.fromisoformat(default_asof), max_value=date.fromisoformat(default_asof),
                          help="選過去的日期做時點回溯：只用當時已公布的資料")
@@ -59,6 +59,8 @@ def _picker(sig: str, default_asof: str):
     watched = code in daily.read_watchlist()
     c3.button("移出觀察" if watched else "加入觀察", icon=":material/star:" if watched else ":material/star_border:",
               on_click=_toggle_watch, args=(code, name), width="stretch", key="watch_toggle")
+    if c4.button("下單", icon=":material/shopping_cart:", width="stretch", key="goto_trade", help="到模擬持股頁的虛擬下單"):
+        common.goto_trade(code)
     if st.query_params.get("code") != code:
         st.query_params["code"] = code
     return code, asof

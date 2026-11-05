@@ -221,3 +221,45 @@ def test_with_defaults_fills_late_keys_without_changing_hash():
     for k in ("take_profit", "max_hold_days"):
         del old["risk"][k]
     assert S.config_hash(S.with_defaults(old)) == S.config_hash(cfg)
+
+
+def buffer_cfg(keep_n: int, n: int = 3) -> dict:
+    return {"universe": {"filters": []},
+            "select": {**S.DEFAULTS["select"], "sort": "score", "n": n, "keep_n": keep_n}}
+
+
+def ranked_day(k: int = 6) -> pd.DataFrame:
+    return pd.DataFrame({"code": [f"c{i}" for i in range(k)], "score": np.arange(k, 0, -1.0)})
+
+
+def test_buffer_keeps_held_stock_inside_keep_n():
+    _, pick = S.select(ranked_day(), buffer_cfg(4), held={"c3"})
+    assert pick["code"].tolist() == ["c0", "c1", "c3"]
+
+
+def test_buffer_sells_held_stock_outside_keep_n():
+    _, pick = S.select(ranked_day(), buffer_cfg(4), held={"c4"})
+    assert pick["code"].tolist() == ["c0", "c1", "c2"]
+
+
+def test_buffer_never_exceeds_n_when_more_are_held():
+    _, pick = S.select(ranked_day(), buffer_cfg(5), held={"c1", "c2", "c3", "c4"})
+    assert pick["code"].tolist() == ["c1", "c2", "c3"]
+
+
+def test_buffer_off_is_plain_top_n():
+    _, pick = S.select(ranked_day(), buffer_cfg(0), held={"c4"})
+    assert pick["code"].tolist() == ["c0", "c1", "c2"]
+
+
+def test_buffer_does_not_let_new_restricted_stock_in():
+    day = ranked_day().assign(restricted=[True] + [False] * 5)
+    _, pick = S.select(day, buffer_cfg(4), held={"c3"})
+    assert pick["code"].tolist() == ["c1", "c2", "c3"]
+
+
+def test_keep_n_default_keeps_old_hash():
+    cfg = S.with_defaults({"universe": {"filters": []}, "select": {"sort": "score", "n": 3}})
+    old = {**cfg, "select": {k: v for k, v in cfg["select"].items() if k != "keep_n"}}
+    assert S.config_hash(cfg) == S.config_hash(old)
+    assert S.config_hash({**cfg, "select": {**cfg["select"], "keep_n": 5}}) != S.config_hash(cfg)

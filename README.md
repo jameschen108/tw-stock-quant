@@ -30,7 +30,7 @@
 - 下市：最後一筆行情離資料尾端 30 天以上的股票視為下市，持股在下一個換股日按最後價值轉成現金（以前會一直卡在帳上賣不掉）；下市當下的報酬用 `strategy.DELIST_RET` 設定，預設 0。現有 11 個策略都沒有在下市時還持有股票，改成 −100% 也只影響用等權大盤當濾網的 3 個策略（因為等權指數本身變了，年化差 −0.7～+2.0 個百分點）。
 - 每次回測都寫入嘗試紀錄（`data/strategy/trials.jsonl`），誠實記下試過幾個設定。
 - `diagnose.py` 拆解綜合分數 Top-N 輸給同池等權的原因：產業配置、市值、哪一組因子拖累。
-- `event_study.py` 事件研究：月營收公告後 5／20／60 個交易日，相對同期流動股票池的超額報酬（扣成本、以月份分群算 t 值），另看外資買賣超條件，並換成市值×波動配對、同產業、0050 三種基準比較（`data/event_study_bench.csv`）。目前最強的是「單月營收創歷史新高且年增 ≥30%」：60 日平均超額對流動股池約 5.4%、對市值×波動配對約 4.2%、對產業約 3.6%，2013–2018 與 2019 後都成立；但勝率不到一半，而 2024 起對 0050 的超額不顯著（t 約 1.2）。
+- `event_study.py` 事件研究：月營收公告後 5／20／60 個交易日，相對同期流動股票池的超額報酬（扣成本、以月份分群再算 Newey-West t 值），另看外資買賣超條件，並換成市值×波動配對、同產業、0050 三種基準比較（`data/event_study_bench.csv`）。目前最強的是「單月營收創歷史新高且年增 ≥30%」：60 日平均超額對流動股池約 5.4%、對市值×波動配對約 4.2%、對產業約 3.6%，2013–2018 與 2019 後都成立；但勝率不到一半，而 2024 起對 0050 的超額不顯著（t 約 1.2）。
 
 **模擬持股**
 - 每月記下綜合分數前 30 名（20 日均成交值 2,000 萬以上），訊號日隔天收盤進場、等權、扣成本，之後追蹤實際報酬，累積真正的樣本外紀錄。
@@ -166,7 +166,7 @@ uv run --with-requirements frontend/requirements.txt streamlit run frontend/app.
 
 - **Deflated Sharpe Ratio**：`strategy.py:deflated_sharpe`，`robust.py`、前端策略頁顯示。用月報酬；試驗次數與各設定 Sharpe 的變異數取自 `data/strategy/trials.jsonl`，另有檢定相對 0050 月超額報酬的版本。
   Bailey, D. H., & López de Prado, M. (2014). The Deflated Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and Non-Normality. *Journal of Portfolio Management*, 40(5), 94–107.
-- **Newey-West 標準誤**：持有期重疊時的 t 值，用在 `technicals.py`（lag = H / 5）、`patterns.py`、`outlook.py`、`robust.py`（月報酬，lag 3）。
+- **Newey-West 標準誤**：持有期重疊時的 t 值，用在 `technicals.py`（lag = H / 5）、`patterns.py`、`outlook.py`、`robust.py`（月報酬，lag 3）、`event_study.py`（月序列，lag = ceil(H / 21) + 1）。
   Newey, W. K., & West, K. D. (1987). A Simple, Positive Semi-Definite, Heteroskedasticity and Autocorrelation Consistent Covariance Matrix. *Econometrica*, 55(3), 703–708.
 - **因子模型拆解**：`ff.py` 用台股資料自建 MKT、SMB、HML、RMW、CMA、MOM 代理因子（2×3 排序、市值加權；每月重組、全體普通股分位，與原文每年 6 月、NYSE 斷點不同），策略月超額報酬對 CAPM、FF3、Carhart、FF5 迴歸；rf 用央行公布的五大銀行一年期定存利率（`refdata/tw_rf_1y.csv`）。輸出 `reports/factor_model.html`。
   Fama, E. F., & French, K. R. (1993). Common Risk Factors in the Returns on Stocks and Bonds. *Journal of Financial Economics*, 33(1), 3–56；Fama, E. F., & French, K. R. (2015). A Five-Factor Asset Pricing Model. *Journal of Financial Economics*, 116(1), 1–22；Carhart, M. M. (1997). On Persistence in Mutual Fund Performance. *Journal of Finance*, 52(1), 57–82。

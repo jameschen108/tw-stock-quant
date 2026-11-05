@@ -11,7 +11,8 @@
   - 持有 5 / 20 / 60 個交易日，窗內有 ret_suspect 的事件剔除
   - 超額 = 個股報酬 − 同進場日、同持有期、流動股票池（20 日均成交值 >= --min-value）的等權平均
   - 扣成本 = 來回 0.585%（手續費 0.1425%×2 + 證交稅 0.3%）
-  - t 值：先對每個進場日取事件平均，再對「進場日」做 t（事件集中在每月 10 日前後，直接對事件算 t 會高估）
+  - t 值：先對每個進場月取事件平均（事件集中在每月 10 日前後，直接對事件算 t 會高估），
+    再對月序列算 Newey-West t，lag = ceil(H / 21) + 1（持有期跨月時相鄰月份重疊），不足 20 個月不算
   - 營收公布日被推估的年份（avail_imputed）不納入
   - 籌碼資料只有 2024-10 起，籌碼條件的樣本只落在這段
   - 最後的「基準比較」表另外換三種基準，檢查超額是不是只來自小型股、高波動或產業：
@@ -20,9 +21,12 @@
       0050        同期 0050 含息報酬
 """
 import argparse
+import math
 
 import numpy as np
 import pandas as pd
+
+from technicals import nw_t
 
 COST = 0.00585
 HORIZONS = (5, 20, 60)
@@ -73,6 +77,11 @@ def matched_excess(fwd, groups, liquid):
     return (long["r"] - bench).rename_axis(["entry", "code"])
 
 
+def overlap_lag(h):
+    """持有 h 個交易日的月序列 Newey-West lag：跨幾個月（每月約 21 個交易日）再加 1。"""
+    return math.ceil(h / 21) + 1
+
+
 def summarize(ev, label, tag, col="ex"):
     rows = []
     for h in HORIZONS:
@@ -83,8 +92,8 @@ def summarize(ev, label, tag, col="ex"):
             rows.append(dict(事件=label, 區間=tag, 持有=h, 事件數=len(x)))
             continue
         by_date = x.groupby("entry")[f"ex{h}"].mean()
-        by_m = x.groupby(x.entry.dt.to_period("M"))[f"ex{h}"].mean()  # 月份分群：持有期重疊時比逐日 t 保守
-        t = by_m.mean() / (by_m.std(ddof=1) / np.sqrt(len(by_m))) if len(by_m) > 2 else np.nan
+        by_m = x.groupby(x.entry.dt.to_period("M"))[f"ex{h}"].mean().sort_index()  # 月份分群
+        t = nw_t(by_m, overlap_lag(h))
         rows.append(dict(事件=label, 區間=tag, 持有=h, 事件數=len(x), 進場日數=len(by_date),
                          平均超額=x[f"ex{h}"].mean(), 中位超額=x[f"ex{h}"].median(),
                          扣成本=x[f"ex{h}"].mean() - COST, 勝率=(x[f"ex{h}"] > 0).mean(), t=t))

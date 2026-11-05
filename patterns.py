@@ -24,7 +24,7 @@
 校準（technicals.py 的方法）:
   每 5 個交易日取樣、股票池同 technicals.py；之後 H 日的產業中性超額報酬（隔天收盤進場）
   每個形態：成立中股票的平均超額（每期至少 5 檔才算）、跑贏同產業的比例、Newey-West t
-  可靠度看樣本外（2019 起）H=20：方向和形態相同、t >= 2 且樣本內同方向 → 有統計支持；
+  可靠度看樣本外（2019 起）H=20：方向和形態相同、t >= 2、FDR q < tc.FDR_Q 且樣本內同方向 → 有統計支持；
   方向相同但不夠 → 弱；方向相反 → 歷史上不可靠。中性的箱型整理不給可靠度。
   technicals.py 的反轉類訊號樣本內就不顯著，傳統形態大多可能沒有預測力；不可靠的形態照樣輸出，
   但不能當買賣理由。形態 × 期間共做了 len(PATTERNS) × len(HORIZONS) 次檢定，單一個 t >= 2 要打折看。
@@ -193,12 +193,23 @@ def calibrate(w: dict, uni: pd.DataFrame, hits: dict, spec: dict = PATTERNS) -> 
                           "avg_n": round(float(np_[np_ > 0].mean()), 1) if (np_ > 0).any() else 0,
                           "n_dates": int(mp.notna().sum())}
             out[k]["horizons"][hz] = res
+    add_fdr(out)
     for k, r in out.items():
         r["reliability"] = reliability(r["side"], r["horizons"][PRIMARY])
     out["_meta"] = {"primary_horizon": PRIMARY, "n_tests": len(spec) * len(HORIZONS),
+                    "fdr": {"family": "同分段內全部有方向形態 × 持有期", "threshold": tc.FDR_Q},
                     "note": "平均超額 = 成立中股票之後 H 日的產業中性超額（%）；勝率 = 跑贏同產業的比例。"
                             "個股報酬右偏，各組勝率常低於 50%，要和其他形態比較。"}
     return out
+
+
+def add_fdr(out: dict) -> None:
+    """每個分段內，有方向的形態 × 持有期算一族做 BH 校正，q 寫回各格；中性形態沒有方向假設，不進檢定。"""
+    cells = [c for r in out.values() if r["side"] != 0 for c in r["horizons"].values()]
+    for p in PERIODS:
+        qs = tc.bh_q([tc.t_to_p(c[p]["t"]) for c in cells])
+        for c, q in zip(cells, qs):
+            c[p]["q"] = None if np.isnan(q) else round(float(q), 4)
 
 
 def reliability(side: int, res: dict) -> str | None:
@@ -207,7 +218,8 @@ def reliability(side: int, res: dict) -> str | None:
     o, i = res[OOS], res[IS]
     if o["mean_ex_pct"] is None or o["mean_ex_pct"] * side <= 0:
         return "歷史上不可靠"
-    if (o["t"] or 0) * side >= 2 and (i["mean_ex_pct"] or 0) * side > 0:
+    passed = o.get("q") is not None and o["q"] < tc.FDR_Q
+    if (o["t"] or 0) * side >= 2 and passed and (i["mean_ex_pct"] or 0) * side > 0:
         return "有統計支持"
     return "弱"
 

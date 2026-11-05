@@ -21,6 +21,7 @@
   - state / event：多方組平均超額 − 空方組平均超額（每組至少 MIN_GROUP 檔）
   - level：與超額報酬的 rank IC
   - t 值用 Newey-West（lag = H / 5），因為持有期重疊
+  - 多重檢定：每個分段內的全部「訊號 × H」算一族，做 Benjamini-Hochberg 校正，q < FDR_Q 的格子標 *
   - H = 10、30（短期 2–6 週）與 60、190（中期 6 週–9 個月）；分 2011–2018 / 2019–2026 兩段
 
 大盤多空:
@@ -33,6 +34,7 @@
 產業用 factors_monthly 的 TEJ 主產業（每家公司取最後一個值，近似）。
 """
 import argparse
+import math
 
 import numpy as np
 import pandas as pd
@@ -41,6 +43,7 @@ from build_panel import OUT
 
 HORIZONS = [10, 30, 60, 190]
 STEP = 5
+FDR_Q = 0.10                 # Benjamini-Hochberg 門檻；分族和門檻在看結果之前定好，不依結果調整
 MIN_GROUP = 20
 MIN_EVENT = 5          # 事件訊號每組最少檔數（黃金 / 死亡交叉很少）
 PERIODS = [("2011–2018", "2011-01-01", "2018-12-31"), ("2019–2026", "2019-01-01", "2026-12-31")]
@@ -209,6 +212,23 @@ def nw_t(x: pd.Series, lag: int) -> float:
     return x.mean() / np.sqrt(v / n)
 
 
+def t_to_p(t: float | None) -> float:
+    """t 值 → 雙尾 p 值（常態近似，樣本數都在數十期以上）。"""
+    return np.nan if t is None or pd.isna(t) else math.erfc(abs(t) / math.sqrt(2))
+
+
+def bh_q(p) -> np.ndarray:
+    """Benjamini-Hochberg (1995) 校正後的 q 值；缺值維持 NaN，不算進檢定數。"""
+    p = np.asarray(p, dtype=float)
+    q = np.full(p.shape, np.nan)
+    ok = np.flatnonzero(~np.isnan(p))
+    if len(ok):
+        order = ok[np.argsort(p[ok])]
+        raw = p[order] * len(ok) / np.arange(1, len(ok) + 1)
+        q[order] = np.minimum(1.0, np.minimum.accumulate(raw[::-1])[::-1])
+    return q
+
+
 def row_rank_ic(a: pd.DataFrame, b: pd.DataFrame) -> pd.Series:
     ok = a.notna() & b.notna()
     ra = a.where(ok).rank(axis=1)
@@ -265,16 +285,19 @@ def run_stocks(w: dict, uni: pd.DataFrame):
     print("個股技術訊號：產業中性超額報酬（state/event = 多方組 − 空方組，%；level = rank IC），括號為 Newey-West t\n"
           f"每 {STEP} 個交易日取樣；H 為持有交易日數（10≈2 週、30≈6 週、60≈3 個月、190≈9 個月）\n")
     for p, a, b in PERIODS:
+        ts = {k: nw_t(x.loc[a:b], k[1] // STEP) for k, x in res.items()}
+        qs = dict(zip(ts, bh_q([t_to_p(t) for t in ts.values()])))
         rows = []
         for name, (kind, term, desc) in SIGNALS.items():
             r = {"訊號": name, "期": term, "類": kind}
             for h in HORIZONS:
                 x = res[(name, h)].loc[a:b]
                 v = x.mean() * (1 if kind == "level" else 100)
-                r[f"H{h}"] = f"{v:+.3f}({nw_t(x, h // STEP):+.1f})" if kind == "level" \
-                    else f"{v:+.2f}({nw_t(x, h // STEP):+.1f})"
+                mark = "*" if qs[(name, h)] < FDR_Q else ""
+                r[f"H{h}"] = f"{v:+.3f}({ts[(name, h)]:+.1f}){mark}" if kind == "level" \
+                    else f"{v:+.2f}({ts[(name, h)]:+.1f}){mark}"
             rows.append(r)
-        print(f"== {p}")
+        print(f"== {p}（* = FDR q < {FDR_Q}，{sum(v < FDR_Q for v in qs.values())}／{len(qs)} 格通過）")
         print(pd.DataFrame(rows).set_index("訊號").to_string(), "\n")
     print("事件訊號平均每期有事件的檔數:", {k: round(v) for k, v in cov.items()})
     print("\n說明:", "; ".join(f"{k} {v[2]}" for k, v in SIGNALS.items()))
